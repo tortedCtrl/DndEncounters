@@ -1,26 +1,33 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        mc:Ignorable="d"
-        d:DesignWidth="1280"
-        d:DesignHeight="900"
         x:Class="DndEncounters.MainWindow"
-        Title="Бестиарий — создание существа"
+        Title="D&amp;D Encounters"
         Width="1280"
         Height="900"
         MinWidth="900"
         MinHeight="650"
         Background="#10131B"
         FontFamily="Inter">
+    <Window.Resources>
+        <SolidColorBrush x:Key="WindowBrush" Color="#10131B" />
+        <SolidColorBrush x:Key="HeaderBrush" Color="#151923" />
+        <SolidColorBrush x:Key="CardBrush" Color="#191E29" />
+        <SolidColorBrush x:Key="InputBrush" Color="#171B25" />
+        <SolidColorBrush x:Key="RaisedBrush" Color="#202633" />
+        <SolidColorBrush x:Key="TextBrush" Color="#E9E7E2" />
+        <SolidColorBrush x:Key="MutedBrush" Color="#9299A6" />
+        <SolidColorBrush x:Key="InputTextBrush" Color="#F2F0EA" />
+        <SolidColorBrush x:Key="BorderBrush" Color="#303746" />
+        <SolidColorBrush x:Key="AccentBrush" Color="#C69A53" />
+    </Window.Resources>
     <Window.Styles>
         <Style Selector="TextBlock">
-            <Setter Property="Foreground" Value="#E9E7E2" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
         </Style>
         <Style Selector="TextBox">
-            <Setter Property="Background" Value="#171B25" />
-            <Setter Property="Foreground" Value="#F2F0EA" />
-            <Setter Property="BorderBrush" Value="#303746" />
+            <Setter Property="Background" Value="{DynamicResource InputBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource InputTextBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="8" />
             <Setter Property="Padding" Value="12,10" />
@@ -28,361 +35,74 @@
             <Setter Property="VerticalContentAlignment" Value="Center" />
             <Setter Property="FontSize" Value="14" />
         </Style>
-        <Style Selector="TextBox:focus">
-            <Setter Property="BorderBrush" Value="#C69A53" />
-        </Style>
         <Style Selector="ComboBox">
-            <Setter Property="Background" Value="#171B25" />
-            <Setter Property="Foreground" Value="#F2F0EA" />
-            <Setter Property="BorderBrush" Value="#303746" />
+            <Setter Property="Background" Value="{DynamicResource InputBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource InputTextBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="8" />
             <Setter Property="MinHeight" Value="42" />
         </Style>
         <Style Selector="Button">
             <Setter Property="CornerRadius" Value="8" />
-            <Setter Property="Padding" Value="18,11" />
+            <Setter Property="Padding" Value="16,10" />
             <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Cursor" Value="Hand" />
         </Style>
         <Style Selector="Button.quiet">
-            <Setter Property="Background" Value="#202633" />
-            <Setter Property="Foreground" Value="#D8D5CE" />
-            <Setter Property="BorderBrush" Value="#343C4B" />
+            <Setter Property="Background" Value="{DynamicResource RaisedBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
         </Style>
         <Style Selector="Button.primary">
-            <Setter Property="Background" Value="#C69A53" />
+            <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
             <Setter Property="Foreground" Value="#17130D" />
             <Setter Property="BorderThickness" Value="0" />
         </Style>
-        <Style Selector="TextBox.multiline">
-            <Setter Property="VerticalContentAlignment" Value="Top" />
-            <Setter Property="MinHeight" Value="112" />
+        <Style Selector="Button.nav">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="TextBox:focus">
+            <Setter Property="BorderBrush" Value="#C69A53" />
+        </Style>
+        <Style Selector="TextBox:pointerover">
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
+        </Style>
+        <Style Selector="Border.dynamic-card">
+            <Setter Property="Background" Value="{DynamicResource CardBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
+        </Style>
+        <Style Selector="Expander.dynamic-card">
+            <Setter Property="Background" Value="{DynamicResource CardBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
         </Style>
     </Window.Styles>
-
-    <Grid RowDefinitions="Auto,*">
-        <Border Grid.Row="0"
-                Background="#151923"
-                BorderBrush="#272D39"
-                BorderThickness="0,0,0,1"
-                Padding="30,16">
-            <Grid ColumnDefinitions="*,Auto">
-                <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+    <Grid x:Name="RootGrid" RowDefinitions="Auto,*">
+        <Border Grid.Row="0" Background="{DynamicResource HeaderBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="0,0,0,1" Padding="24,12">
+            <Grid ColumnDefinitions="Auto,*,Auto" RowDefinitions="Auto,Auto">
+                <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
                     <Border Width="36" Height="36" CornerRadius="10" Background="#302719">
                         <TextBlock Text="✦" Foreground="#D5A95F" FontSize="21"
                                    HorizontalAlignment="Center" VerticalAlignment="Center" />
                     </Border>
                     <StackPanel Spacing="1">
-                        <TextBlock Text="БЕСТИАРИЙ" FontSize="11" FontWeight="Bold"
+                        <TextBlock Text="D&amp;D ENCOUNTERS" FontSize="11" FontWeight="Bold"
                                    Foreground="#C69A53" />
-                        <TextBlock Text="Редактор существ" FontSize="14" FontWeight="SemiBold" />
+                        <TextBlock Text="Бестиарий и игровые сцены" FontSize="13" />
                     </StackPanel>
                 </StackPanel>
-                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                    <TextBlock Text="Черновик" Foreground="#8D94A2" FontSize="12"
-                               VerticalAlignment="Center" />
-                    <Border Width="8" Height="8" CornerRadius="4" Background="#C69A53"
-                            VerticalAlignment="Center" />
-                </StackPanel>
+                <StackPanel x:Name="NavigationPanel" Grid.Column="1" Orientation="Horizontal"
+                            Spacing="6" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                <Button x:Name="ThemeButton" Grid.Column="2" Classes="quiet"
+                        Content="Светлая тема" VerticalAlignment="Center" />
+                <StackPanel x:Name="MenuPanel" Grid.Row="1" Grid.ColumnSpan="3"
+                            Orientation="Horizontal" Spacing="8" Margin="46,8,0,0" />
             </Grid>
         </Border>
-
-        <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled">
-            <StackPanel MaxWidth="1080" HorizontalAlignment="Center" Spacing="24" Margin="32,30,32,40">
-                <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
-                    <StackPanel Spacing="7">
-                        <TextBlock Text="НОВАЯ ЗАПИСЬ" FontSize="11" FontWeight="Bold"
-                                   Foreground="#C69A53" />
-                        <TextBlock Text="Создать существо" FontSize="32" FontWeight="Bold"
-                                   LetterSpacing="-0.5" />
-                        <TextBlock Text="Опишите монстра и подготовьте его для своей кампании."
-                                   FontSize="14" Foreground="#9299A6" />
-                    </StackPanel>
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10"
-                                VerticalAlignment="Center">
-                        <Button Classes="quiet" Content="Отмена" />
-                        <Button Classes="primary" Content="Сохранить существо" />
-                    </StackPanel>
-                </Grid>
-
-                <Border Background="#191E29" BorderBrush="#2A3140" BorderThickness="1"
-                        CornerRadius="14" Padding="24">
-                    <StackPanel Spacing="20">
-                        <Grid ColumnDefinitions="*,*">
-                            <StackPanel Spacing="4">
-                                <TextBlock Text="Основное" FontSize="18" FontWeight="SemiBold" />
-                                <TextBlock Text="Имя, тип и общее описание существа"
-                                           FontSize="12" Foreground="#8992A1" />
-                            </StackPanel>
-                            <Border Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center"
-                                    Background="#382326" CornerRadius="12" Padding="10,5">
-                                <TextBlock Text="★  Обязательное поле" FontSize="11" Foreground="#E5A09A" />
-                            </Border>
-                        </Grid>
-                        <Grid ColumnDefinitions="2*,*,*" ColumnSpacing="16" RowDefinitions="Auto,Auto">
-                            <StackPanel Spacing="7">
-                                <TextBlock Text="Имя существа *" FontSize="12" FontWeight="SemiBold"
-                                           Foreground="#C7CAD1" />
-                                <TextBox Watermark="Например, Древний красный дракон" />
-                            </StackPanel>
-                            <StackPanel Grid.Column="1" Spacing="7">
-                                <TextBlock Text="Размер" FontSize="12" FontWeight="SemiBold"
-                                           Foreground="#C7CAD1" />
-                                <ComboBox PlaceholderText="Выберите размер">
-                                    <ComboBoxItem Content="Крошечный" />
-                                    <ComboBoxItem Content="Маленький" />
-                                    <ComboBoxItem Content="Средний" />
-                                    <ComboBoxItem Content="Большой" />
-                                    <ComboBoxItem Content="Огромный" />
-                                    <ComboBoxItem Content="Гигантский" />
-                                </ComboBox>
-                            </StackPanel>
-                            <StackPanel Grid.Column="2" Spacing="7">
-                                <TextBlock Text="Тип существа" FontSize="12" FontWeight="SemiBold"
-                                           Foreground="#C7CAD1" />
-                                <ComboBox PlaceholderText="Выберите тип">
-                                    <ComboBoxItem Content="Аберрация" />
-                                    <ComboBoxItem Content="Зверь" />
-                                    <ComboBoxItem Content="Дракон" />
-                                    <ComboBoxItem Content="Нежить" />
-                                    <ComboBoxItem Content="Фея" />
-                                    <ComboBoxItem Content="Гуманоид" />
-                                    <ComboBoxItem Content="Другое" />
-                                </ComboBox>
-                            </StackPanel>
-                            <StackPanel Grid.Row="1" Spacing="7" Margin="0,16,0,0">
-                                <TextBlock Text="Мировоззрение" FontSize="12" FontWeight="SemiBold"
-                                           Foreground="#C7CAD1" />
-                                <ComboBox PlaceholderText="Выберите мировоззрение">
-                                    <ComboBoxItem Content="Законно-доброе" />
-                                    <ComboBoxItem Content="Нейтрально-доброе" />
-                                    <ComboBoxItem Content="Хаотично-доброе" />
-                                    <ComboBoxItem Content="Законно-нейтральное" />
-                                    <ComboBoxItem Content="Нейтральное" />
-                                    <ComboBoxItem Content="Хаотично-нейтральное" />
-                                    <ComboBoxItem Content="Законно-злое" />
-                                    <ComboBoxItem Content="Нейтрально-злое" />
-                                    <ComboBoxItem Content="Хаотично-злое" />
-                                    <ComboBoxItem Content="Без мировоззрения" />
-                                </ComboBox>
-                            </StackPanel>
-                            <StackPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Spacing="7"
-                                        Margin="0,16,0,0">
-                                <TextBlock Text="Краткое описание" FontSize="12" FontWeight="SemiBold"
-                                           Foreground="#C7CAD1" />
-                                <TextBox Watermark="Внешность, повадки или заметные детали" />
-                            </StackPanel>
-                        </Grid>
-                    </StackPanel>
-                </Border>
-
-                <Grid ColumnDefinitions="1.15*,*,*" ColumnSpacing="16">
-                    <Border Background="#191E29" BorderBrush="#2A3140" BorderThickness="1"
-                            CornerRadius="14" Padding="20">
-                        <StackPanel Spacing="12">
-                            <TextBlock Text="Класс сложности" FontSize="12" FontWeight="SemiBold"
-                                       Foreground="#C7CAD1" />
-                            <TextBox Watermark="Например, 5" />
-                            <TextBlock Text="Бонус мастерства: +3" FontSize="11" Foreground="#8992A1" />
-                        </StackPanel>
-                    </Border>
-                    <Border Grid.Column="1" Background="#191E29" BorderBrush="#2A3140"
-                            BorderThickness="1" CornerRadius="14" Padding="20">
-                        <StackPanel Spacing="12">
-                            <TextBlock Text="Класс доспеха" FontSize="12" FontWeight="SemiBold"
-                                       Foreground="#C7CAD1" />
-                            <TextBox Watermark="Например, 17" />
-                            <TextBlock Text="Тип защиты" FontSize="11" Foreground="#8992A1" />
-                        </StackPanel>
-                    </Border>
-                    <Border Grid.Column="2" Background="#191E29" BorderBrush="#2A3140"
-                            BorderThickness="1" CornerRadius="14" Padding="20">
-                        <StackPanel Spacing="12">
-                            <TextBlock Text="Количество хитов" FontSize="12" FontWeight="SemiBold"
-                                       Foreground="#C7CAD1" />
-                            <TextBox Watermark="Например, 136 (16к10 + 48)" />
-                            <TextBlock Text="Максимум хитов или формула" FontSize="11"
-                                       Foreground="#8992A1" />
-                        </StackPanel>
-                    </Border>
-                </Grid>
-
-                <Grid ColumnDefinitions="*,*" ColumnSpacing="16">
-                    <Border Background="#191E29" BorderBrush="#2A3140" BorderThickness="1"
-                            CornerRadius="14" Padding="24">
-                        <StackPanel Spacing="18">
-                            <StackPanel Spacing="4">
-                                <TextBlock Text="Характеристики" FontSize="18" FontWeight="SemiBold" />
-                                <TextBlock Text="Значения и модификаторы рассчитываются по правилам D&amp;D"
-                                           FontSize="12" Foreground="#8992A1" />
-                            </StackPanel>
-                            <Grid ColumnDefinitions="*,*,*" RowDefinitions="Auto,Auto" ColumnSpacing="10"
-                                  RowSpacing="10">
-                                <Border Background="#202633" CornerRadius="9" Padding="12">
-                                    <StackPanel Spacing="8">
-                                        <TextBlock Text="Сила" FontSize="12" Foreground="#B7BECA" />
-                                        <TextBox Watermark="10" />
-                                        <TextBlock Text="Модификатор  +0" FontSize="10" Foreground="#8992A1" />
-                                    </StackPanel>
-                                </Border>
-                                <Border Grid.Column="1" Background="#202633" CornerRadius="9" Padding="12">
-                                    <StackPanel Spacing="8">
-                                        <TextBlock Text="Ловкость" FontSize="12" Foreground="#B7BECA" />
-                                        <TextBox Watermark="10" />
-                                        <TextBlock Text="Модификатор  +0" FontSize="10" Foreground="#8992A1" />
-                                    </StackPanel>
-                                </Border>
-                                <Border Grid.Column="2" Background="#202633" CornerRadius="9" Padding="12">
-                                    <StackPanel Spacing="8">
-                                        <TextBlock Text="Телосложение" FontSize="12" Foreground="#B7BECA" />
-                                        <TextBox Watermark="10" />
-                                        <TextBlock Text="Модификатор  +0" FontSize="10" Foreground="#8992A1" />
-                                    </StackPanel>
-                                </Border>
-                                <Border Grid.Row="1" Background="#202633" CornerRadius="9" Padding="12">
-                                    <StackPanel Spacing="8">
-                                        <TextBlock Text="Интеллект" FontSize="12" Foreground="#B7BECA" />
-                                        <TextBox Watermark="10" />
-                                        <TextBlock Text="Модификатор  +0" FontSize="10" Foreground="#8992A1" />
-                                    </StackPanel>
-                                </Border>
-                                <Border Grid.Row="1" Grid.Column="1" Background="#202633"
-                                        CornerRadius="9" Padding="12">
-                                    <StackPanel Spacing="8">
-                                        <TextBlock Text="Мудрость" FontSize="12" Foreground="#B7BECA" />
-                                        <TextBox Watermark="10" />
-                                        <TextBlock Text="Модификатор  +0" FontSize="10" Foreground="#8992A1" />
-                                    </StackPanel>
-                                </Border>
-                                <Border Grid.Row="1" Grid.Column="2" Background="#202633"
-                                        CornerRadius="9" Padding="12">
-                                    <StackPanel Spacing="8">
-                                        <TextBlock Text="Харизма" FontSize="12" Foreground="#B7BECA" />
-                                        <TextBox Watermark="10" />
-                                        <TextBlock Text="Модификатор  +0" FontSize="10" Foreground="#8992A1" />
-                                    </StackPanel>
-                                </Border>
-                            </Grid>
-                        </StackPanel>
-                    </Border>
-
-                    <Border Grid.Column="1" Background="#191E29" BorderBrush="#2A3140"
-                            BorderThickness="1" CornerRadius="14" Padding="24">
-                        <StackPanel Spacing="16">
-                            <StackPanel Spacing="4">
-                                <TextBlock Text="Боевые параметры" FontSize="18" FontWeight="SemiBold" />
-                                <TextBlock Text="Передвижение, спасброски и восприятие"
-                                           FontSize="12" Foreground="#8992A1" />
-                            </StackPanel>
-                            <StackPanel Spacing="7">
-                                <TextBlock Text="Скорость" FontSize="12" FontWeight="SemiBold"
-                                           Foreground="#C7CAD1" />
-                                <TextBox Watermark="Например, 9 м, полёт 18 м" />
-                            </StackPanel>
-                            <StackPanel Spacing="7">
-                                <TextBlock Text="Спасброски" FontSize="12" FontWeight="SemiBold"
-                                           Foreground="#C7CAD1" />
-                                <TextBox Watermark="Например, Лов +5, Мдр +4" />
-                            </StackPanel>
-                            <StackPanel Spacing="7">
-                                <TextBlock Text="Навыки" FontSize="12" FontWeight="SemiBold"
-                                           Foreground="#C7CAD1" />
-                                <TextBox Watermark="Например, Внимательность +7, Скрытность +4" />
-                            </StackPanel>
-                        </StackPanel>
-                    </Border>
-                </Grid>
-
-                <Border Background="#191E29" BorderBrush="#2A3140" BorderThickness="1"
-                        CornerRadius="14" Padding="24">
-                    <StackPanel Spacing="18">
-                        <StackPanel Spacing="4">
-                            <TextBlock Text="Особые свойства" FontSize="18" FontWeight="SemiBold" />
-                            <TextBlock Text="Сопротивления, иммунитеты, чувства и языки"
-                                       FontSize="12" Foreground="#8992A1" />
-                        </StackPanel>
-                        <Grid ColumnDefinitions="*,*" ColumnSpacing="16" RowDefinitions="Auto,Auto,Auto">
-                            <StackPanel Spacing="7">
-                                <TextBlock Text="Уязвимости к урону" FontSize="12" FontWeight="SemiBold"
-                                           Foreground="#C7CAD1" />
-                                <TextBox Watermark="Например, холод" />
-                            </StackPanel>
-                            <StackPanel Grid.Column="1" Spacing="7">
-                                <TextBlock Text="Сопротивления урону" FontSize="12" FontWeight="SemiBold"
-                                           Foreground="#C7CAD1" />
-                                <TextBox Watermark="Например, огонь; дробящий от немагических атак" />
-                            </StackPanel>
-                            <StackPanel Grid.Row="1" Spacing="7" Margin="0,16,0,0">
-                                <TextBlock Text="Иммунитеты к урону и состояниям" FontSize="12"
-                                           FontWeight="SemiBold" Foreground="#C7CAD1" />
-                                <TextBox Watermark="Например, яд; испуг, отравление" />
-                            </StackPanel>
-                            <StackPanel Grid.Row="1" Grid.Column="1" Spacing="7" Margin="0,16,0,0">
-                                <TextBlock Text="Чувства" FontSize="12" FontWeight="SemiBold"
-                                           Foreground="#C7CAD1" />
-                                <TextBox Watermark="Например, тёмное зрение 36 м, пассивная Внимательность 17" />
-                            </StackPanel>
-                            <StackPanel Grid.Row="2" Spacing="7" Margin="0,16,0,0">
-                                <TextBlock Text="Языки" FontSize="12" FontWeight="SemiBold"
-                                           Foreground="#C7CAD1" />
-                                <TextBox Watermark="Например, общий, драконий" />
-                            </StackPanel>
-                            <StackPanel Grid.Row="2" Grid.Column="1" Spacing="7" Margin="0,16,0,0">
-                                <TextBlock Text="Среда обитания" FontSize="12" FontWeight="SemiBold"
-                                           Foreground="#C7CAD1" />
-                                <TextBox Watermark="Например, горы, вулканические земли" />
-                            </StackPanel>
-                        </Grid>
-                    </StackPanel>
-                </Border>
-
-                <Border Background="#191E29" BorderBrush="#2A3140" BorderThickness="1"
-                        CornerRadius="14" Padding="24">
-                    <StackPanel Spacing="20">
-                        <StackPanel Spacing="4">
-                            <TextBlock Text="Описание и действия" FontSize="18" FontWeight="SemiBold" />
-                            <TextBlock Text="Добавьте особенности и боевые действия существа"
-                                       FontSize="12" Foreground="#8992A1" />
-                        </StackPanel>
-                        <Grid ColumnDefinitions="*,*" ColumnSpacing="16" RowDefinitions="Auto,Auto">
-                            <StackPanel Spacing="7">
-                                <TextBlock Text="Особенности" FontSize="12" FontWeight="SemiBold"
-                                           Foreground="#C7CAD1" />
-                                <TextBox Classes="multiline" AcceptsReturn="True" TextWrapping="Wrap"
-                                         Watermark="Например, Легендарное сопротивление. Если существо проваливает спасбросок, оно может вместо этого преуспеть." />
-                            </StackPanel>
-                            <StackPanel Grid.Column="1" Spacing="7">
-                                <TextBlock Text="Действия" FontSize="12" FontWeight="SemiBold"
-                                           Foreground="#C7CAD1" />
-                                <TextBox Classes="multiline" AcceptsReturn="True" TextWrapping="Wrap"
-                                         Watermark="Например, Мультиатака. Существо совершает две атаки когтями." />
-                            </StackPanel>
-                            <StackPanel Grid.Row="1" Spacing="7" Margin="0,16,0,0">
-                                <TextBlock Text="Бонусные действия" FontSize="12" FontWeight="SemiBold"
-                                           Foreground="#C7CAD1" />
-                                <TextBox Classes="multiline" AcceptsReturn="True" TextWrapping="Wrap"
-                                         Watermark="Необязательные действия, совершаемые бонусным действием" />
-                            </StackPanel>
-                            <StackPanel Grid.Row="1" Grid.Column="1" Spacing="7" Margin="0,16,0,0">
-                                <TextBlock Text="Реакции" FontSize="12" FontWeight="SemiBold"
-                                           Foreground="#C7CAD1" />
-                                <TextBox Classes="multiline" AcceptsReturn="True" TextWrapping="Wrap"
-                                         Watermark="Необязательные реакции существа" />
-                            </StackPanel>
-                        </Grid>
-                    </StackPanel>
-                </Border>
-
-                <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,8">
-                    <TextBlock Text="Поля можно будет отредактировать позже в бестиарии."
-                               FontSize="12" Foreground="#7F8794" VerticalAlignment="Center" />
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
-                        <Button Classes="quiet" Content="Отмена" />
-                        <Button Classes="primary" Content="Сохранить существо" />
-                    </StackPanel>
-                </Grid>
-            </StackPanel>
-        </ScrollViewer>
+        <ContentControl x:Name="ContentHost" Grid.Row="1" />
     </Grid>
 </Window>
