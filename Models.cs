@@ -70,6 +70,7 @@ public sealed class EncounterMember
     public int Initiative { get; set; }
     public string ImagePath { get; set; } = "";
     public bool Concentrating { get; set; }
+    public int? MaxHitPoints { get; set; }
 }
 
 public sealed class Encounter
@@ -204,4 +205,68 @@ public static class MonsterRules
     private static ChallengeRecommendation R(string cr, int proficiency, int ac, int minHp, int maxHp,
         int attack, int minDamage, int maxDamage, int dc, int xp) =>
         new(cr, proficiency, ac, minHp, maxHp, attack, minDamage, maxDamage, dc, xp);
+    
+
+    public static readonly Dictionary<string, string> SavingThrowAbilities =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Сил"] = "Сила",
+            ["Сила"] = "Сила",
+            ["Лов"] = "Ловкость",
+            ["Ловкость"] = "Ловкость",
+            ["Тел"] = "Телосложение",
+            ["Телосложение"] = "Телосложение",
+            ["Инт"] = "Интеллект",
+            ["Интеллект"] = "Интеллект",
+            ["Муд"] = "Мудрость",
+            ["Мудрость"] = "Мудрость",
+            ["Хар"] = "Харизма",
+            ["Харизма"] = "Харизма"
+        };
+
+    public static readonly Dictionary<string, string> SkillAbilities =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Атлетика"] = "Сила",
+            ["Акробатика"] = "Ловкость",
+            ["Ловкость рук"] = "Ловкость",
+            ["Скрытность"] = "Ловкость",
+            ["Магия"] = "Интеллект",
+            ["История"] = "Интеллект",
+            ["Расследование"] = "Интеллект",
+            ["Природа"] = "Интеллект",
+            ["Религия"] = "Интеллект",
+            ["Анализ"] = "Мудрость",
+            ["Восприятие"] = "Мудрость",
+            ["Выживание"] = "Мудрость",
+            ["Медицина"] = "Мудрость",
+            ["Проницательность"] = "Мудрость",
+            ["Уход за животными"] = "Мудрость",
+            ["Запугивание"] = "Харизма",
+            ["Выступление"] = "Харизма",
+            ["Обман"] = "Харизма",
+            ["Убеждение"] = "Харизма"
+        };
+
+    public static int GetSaveModifier(
+        string abilityName,
+        IReadOnlyDictionary<string, int> abilities,
+        int proficiencyBonus)
+    {
+        var ability = SavingThrowAbilities[abilityName];
+        var score = abilities[ability];
+
+        return AbilityModifier(score) + proficiencyBonus;
+    }
+
+    public static int GetSkillModifier(
+        string skillName,
+        IReadOnlyDictionary<string, int> abilities,
+        int proficiencyBonus)
+    {
+        var ability = SkillAbilities[skillName];
+        var score = abilities[ability];
+
+        return AbilityModifier(score) + proficiencyBonus;
+    }
 }

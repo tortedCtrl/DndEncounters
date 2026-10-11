@@ -1,6 +1,8 @@
 using System.Globalization;
+using System.Text.RegularExpressions;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Documents;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
@@ -21,7 +23,10 @@ public partial class MainWindow : Window
     private List<EncounterMember> _draftMonsters = [];
     private List<string> _pendingImages = [];
     private int _openMenu = -1;
-    private bool _isLightTheme;
+    private bool _isLightTheme = true;
+    private static string ThemeSettingsPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "DndEncounters", "theme.txt");
     private string? _startupError;
     private TextBlock? _status;
     private TextBlock? _challengeHints;
@@ -39,6 +44,9 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        WindowState = WindowState.Maximized;
+        _isLightTheme = !LoadSavedLightTheme();
+        ToggleTheme();
         ThemeButton.Click += (_, _) => ToggleTheme();
         try
         {
@@ -158,6 +166,32 @@ public partial class MainWindow : Window
         if (Application.Current is { } application)
             application.RequestedThemeVariant = _isLightTheme ? ThemeVariant.Light : ThemeVariant.Dark;
         ThemeButton.Content = _isLightTheme ? "Тёмная тема" : "Светлая тема";
+        SaveThemePreference(_isLightTheme);
+    }
+
+    private static bool LoadSavedLightTheme()
+    {
+        try
+        {
+            if (File.Exists(ThemeSettingsPath))
+                return File.ReadAllText(ThemeSettingsPath).Trim().Equals("light", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        return true;
+    }
+
+    private static void SaveThemePreference(bool isLight)
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(ThemeSettingsPath);
+            if (!string.IsNullOrEmpty(directory))
+                Directory.CreateDirectory(directory);
+            File.WriteAllText(ThemeSettingsPath, isLight ? "light" : "dark");
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     private void ShowHome()
@@ -355,8 +389,173 @@ public partial class MainWindow : Window
     {
         var field = new StackPanel { Spacing = 7 };
         field.Children.Add(Label(title, required));
-        field.Children.Add(input);
+
+        // Для любого многострочного текстового поля добавляем панель форматирования.
+        field.Children.Add(input is TextBox { AcceptsReturn: true } textBox
+            ? CreateFormattingEditor(textBox)
+            : input);
+
         return field;
+    }
+
+    private Control CreateFormattingEditor(TextBox input)
+    {
+        var editor = new StackPanel { Spacing = 6 };
+        var toolbar = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 5
+        };
+
+        Button Tool(string caption, Action action)
+        {
+            var button = new Button
+            {
+                Content = caption,
+                Padding = new Thickness(9, 5),
+                MinHeight = 30,
+                Focusable = false
+            };
+
+            button.Click += (_, _) => action();
+            return button;
+        }
+
+        toolbar.Children.Add(Tool("𝐁", () => WrapTextSelection(input, "**", "**")));
+        toolbar.Children.Add(Tool("𝑰", () => WrapTextSelection(input, "*", "*")));
+        toolbar.Children.Add(Tool("U̲", () => WrapTextSelection(input, "++", "++")));
+
+        var fontSize = Select(["12", "14", "16", "18", "20", "24", "28", "32"], "Т");
+        fontSize.SelectedItem = "16";
+        fontSize.MinWidth = 90;
+        toolbar.Children.Add(fontSize);
+        toolbar.Children.Add(Tool("✓", () =>
+        {
+            var selectedSize = fontSize.SelectedItem?.ToString();
+            if (selectedSize is not null)
+                WrapTextSelection(input, $"{{size:{selectedSize}}}", "{/size}");
+        }));
+        toolbar.Children.Add(Tool("☷", () => PrefixSelectedLines(input, "- ")));
+
+        editor.Children.Add(toolbar);
+        editor.Children.Add(input);
+        return editor;
+    }
+
+    private static void WrapTextSelection(TextBox input, string prefix, string suffix)
+    {
+        var text = input.Text ?? "";
+
+        var start = Math.Clamp(input.SelectionStart, 0, text.Length);
+        var end = Math.Clamp(input.SelectionEnd, 0, text.Length);
+
+        if (end < start)
+            (start, end) = (end, start);
+
+        // Если текст не выделен, ничего не меняем.
+        if (start == end)
+            return;
+
+        var selected = text.Substring(start, end - start);
+        var replacement = prefix + selected + suffix;
+
+        input.Text = text.Remove(start, end - start)
+                        .Insert(start, replacement);
+
+        // Оставляем выделенным исходный текст внутри маркеров.
+        input.SelectionStart = start + prefix.Length;
+        input.SelectionEnd = start + prefix.Length + selected.Length;
+
+        input.Focus();
+    }
+
+    private static void PrefixSelectedLines(TextBox input, string prefix)
+    {
+        var text = input.Text ?? "";
+        var start = Math.Clamp(input.SelectionStart, 0, text.Length);
+        var end = Math.Clamp(input.SelectionEnd, 0, text.Length);
+
+        var lineStart = start == 0 ? 0 : text.LastIndexOf('\n', Math.Max(0, start - 1)) + 1;
+        var lineEnd = end >= text.Length ? text.Length : text.IndexOf('\n', end);
+        if (lineEnd < 0)
+            lineEnd = text.Length;
+
+        var selectedLines = text.Substring(lineStart, lineEnd - lineStart);
+        var prefixed = string.Join(Environment.NewLine,
+            selectedLines.Split('\n').Select(line => prefix + line.TrimEnd('\r')));
+        input.Text = text.Remove(lineStart, lineEnd - lineStart).Insert(lineStart, prefixed);
+        input.SelectionStart = lineStart + prefixed.Length;
+        input.SelectionEnd = input.SelectionStart;
+        input.Focus();
+    }
+
+    private static TextBlock CreateFormattedTextBlock(string text)
+    {
+        var block = new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            LineHeight = 21
+        };
+
+        // Поддерживаем обычный текст, **жирный**, *курсив*, ++подчёркнутый++
+        // и размер {size:18}текст{/size}. Старые записи без разметки тоже работают.
+        var pattern = new Regex(@"\*\*\*(.+?)\*\*\*|\*\*(.+?)\*\*|__(.+?)__|\*(.+?)\*|\+\+(.+?)\+\+|\{size:(\d{1,2})\}(.+?)\{/size\}");
+        var lines = (text ?? "").Replace("\r\n", "\n").Split('\n');
+
+        for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
+        {
+            if (lineIndex > 0)
+                block.Inlines.Add(new LineBreak());
+
+            var line = lines[lineIndex];
+            // Автоматическое выделение подписей статблока и числовых модификаторов.
+            line = Regex.Replace(line,
+                @"^(Класс доспеха|Хиты|Скорость|Спасброски|Навыки|Уязвимость к урону|Сопротивление урону|Иммунитет к урону|Иммунитет к состоянию|Чувства|Языки|Бонус мастерства|Инициатива|Среда обитания|Опасность|Характеристики|Сил|Лов|Тел|Инт|Мдр|Хар)(?=\s|:)",
+                "**$1**");
+            line = Regex.Replace(line, @"(?<![\w*])([+-]\d+)(?![\w*])", "**$1**");
+            var isListItem = line.StartsWith("- ", StringComparison.Ordinal) ||
+                             line.StartsWith("* ", StringComparison.Ordinal);
+            if (isListItem)
+            {
+                block.Inlines.Add(new Run { Text = "• " });
+                line = line[2..];
+            }
+
+            var position = 0;
+            foreach (Match match in pattern.Matches(line))
+            {
+                if (match.Index > position)
+                    block.Inlines.Add(new Run { Text = line[position..match.Index] });
+
+                var contentGroup = Enumerable.Range(1, 7).FirstOrDefault(i => match.Groups[i].Success);
+                var run = new Run { Text = match.Groups[contentGroup].Value };
+                if (contentGroup == 1)
+                {
+                    run.FontWeight = FontWeight.Bold;
+                    run.FontStyle = FontStyle.Italic;
+                }
+                else if (contentGroup == 2)
+                    run.FontWeight = FontWeight.Bold;
+                else if (contentGroup == 3)
+                    run.FontWeight = FontWeight.Bold;
+                else if (contentGroup == 4)
+                    run.FontStyle = FontStyle.Italic;
+                else if (contentGroup == 5)
+                    run.TextDecorations = TextDecorations.Underline;
+                else if (contentGroup == 7 &&
+                         double.TryParse(match.Groups[6].Value, NumberStyles.Integer,
+                             CultureInfo.InvariantCulture, out var size))
+                    run.FontSize = Math.Clamp(size, 8, 48);
+
+                block.Inlines.Add(run);
+                position = match.Index + match.Length;
+            }
+
+            if (position < line.Length)
+                block.Inlines.Add(new Run { Text = line[position..] });
+        }
+
+        return block;
     }
 
     private TextBox Input(string watermark = "", bool multiline = false, string? text = null)
@@ -410,7 +609,7 @@ public partial class MainWindow : Window
     private void ShowMonsterEditor(Monster? monster)
     {
         _editingMonster = monster;
-        _pendingImages = [];
+        _pendingImages = monster?.ImagePaths.ToList() ?? [];
         _monsterFields.Clear();
         var page = NewPage();
         page.Children.Add(Heading(monster is null ? "Создать монстра" : $"Редактировать: {monster.Name}",
@@ -428,7 +627,7 @@ public partial class MainWindow : Window
         page.Children.Add(overview);
 
         var challenge = Section("Опасность, защита и хиты",
-            "Рекомендации соответствуют таблице характеристик монстров DMG 2014, стр. 274.");
+            "Рекомендации соответствуют таблице характеристик чудовищ на основе показателя опасности DMG 2014, стр. 274.");
         var challengeBody = (StackPanel)challenge.Child!;
         _challengeHints = new TextBlock
         {
@@ -455,8 +654,40 @@ public partial class MainWindow : Window
             UpdateDerivedHints();
         };
         UpdateChallengeHints(cr);
+
         if (_monsterFields["HitDie"] is ComboBox hitDieSelector)
-            hitDieSelector.SelectionChanged += (_, _) => UpdateDerivedHints();
+        {
+            // При ручном изменении кости обновляем подсказки.
+            hitDieSelector.SelectionChanged += (_, _) =>
+            {
+                UpdateDerivedHints();
+            };
+
+            // При изменении размера автоматически выбираем рекомендуемую кость.
+            size.SelectionChanged += (_, _) =>
+            {
+                if (size.SelectedItem is not string selectedSize)
+                    return;
+
+                var recommendedDie = selectedSize switch
+                {
+                    "Крошечный" => "d4",
+                    "Маленький" => "d6",
+                    "Средний" => "d8",
+                    "Большой" => "d10",
+                    "Огромный" => "d12",
+                    "Гигантский" => "d20",
+                    _ => null
+                };
+
+                if (recommendedDie != null)
+                {
+                    hitDieSelector.SelectedItem = recommendedDie;
+                    UpdateDerivedHints();
+                }
+            };
+        }
+
 
         var abilitiesSection = Section("Характеристики", "Значения от 1 до 30; модификаторы рассчитываются автоматически.");
         var abilities = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*,*"), RowDefinitions = new RowDefinitions("Auto,Auto"), ColumnSpacing = 12, RowSpacing = 12 };
@@ -506,7 +737,7 @@ public partial class MainWindow : Window
         var specialSection = Section("Особые свойства", "Сопротивления, иммунитеты, чувства, языки и среда обитания.");
         var special = (StackPanel)specialSection.Child!;
         var specialGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*"), RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto"), ColumnSpacing = 12, RowSpacing = 12 };
-        string[] damageTypes = ["Дробящий", "Колющий", "Рубящий", "Кислота", "Холод", "Огонь", "Сила", "Электричество", "Некротический", "Яд", "Психический", "Излучение", "Гром"];
+        string[] damageTypes = ["Дробящий", "Колющий", "Рубящий", "Кислота", "Холод", "Огонь", "Силовое поле", "Электричество", "Некротическая энергия", "Яд", "Психический", "Излучение", "Звук"];
         string[] conditions = ["Ослепление", "Очарование", "Глухота", "Истощение", "Испуг", "Захват", "Недееспособность", "Невидимость", "Паралич", "Окаменение", "Отравление", "Сбит с ног", "Опутан", "Ошеломление", "Без сознания"];
         string[] languages = ["Общий", "Дварфийский", "Эльфийский", "Великаний", "Гномий", "Гоблинский", "Полуросликов", "Орочий", "Бездны", "Небесный", "Драконий", "Глубинная речь", "Инфернальный", "Первичный", "Сильван", "Подземный", "Телепатия"];
         AddMultiSelect(specialGrid, "Уязвимости к урону", damageTypes, "Vulnerabilities", 0, 0, SplitChoices(monster?.Vulnerabilities));
@@ -522,12 +753,12 @@ public partial class MainWindow : Window
         var descriptionSection = Section("Описание и действия", "Пустые разделы не появятся в статблоке.");
         var descriptions = (StackPanel)descriptionSection.Child!;
         var descriptionGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*"), RowDefinitions = new RowDefinitions("Auto,Auto,Auto"), ColumnSpacing = 12, RowSpacing = 12 };
-        AddTextField(descriptionGrid, "Особенности", "Описание особенностей", "Traits", false, 0, 0, monster?.Traits, multiline: true);
+        AddTextField(descriptionGrid, "Особенности", "Описание особенностей, возможности\nколдовать и списка заклинаний.", "Traits", false, 0, 0, monster?.Traits, multiline: true);
         AddTextField(descriptionGrid, "Действия", "Описание действий", "Actions", false, 1, 0, monster?.Actions, multiline: true);
-        AddTextField(descriptionGrid, "Бонусные действия", "Необязательно", "BonusActions", false, 0, 1, monster?.BonusActions, multiline: true);
-        AddTextField(descriptionGrid, "Реакции", "Необязательно", "Reactions", false, 1, 1, monster?.Reactions, multiline: true);
-        AddTextField(descriptionGrid, "Легендарные действия", "Необязательно", "LegendaryActions", false, 0, 2, monster?.LegendaryActions, multiline: true);
-        AddTextField(descriptionGrid, "Логово", "Необязательно", "Lair", false, 1, 2, monster?.Lair, multiline: true);
+        AddTextField(descriptionGrid, "Бонусные действия", "Описание бонусных действий.", "BonusActions", false, 0, 1, monster?.BonusActions, multiline: true);
+        AddTextField(descriptionGrid, "Реакции", "Описание реакций.", "Reactions", false, 1, 1, monster?.Reactions, multiline: true);
+        AddTextField(descriptionGrid, "Легендарные действия", "Описание легендарных действий.", "LegendaryActions", false, 0, 2, monster?.LegendaryActions, multiline: true);
+        AddTextField(descriptionGrid, "Логово", "Описание действий логова.", "Lair", false, 1, 2, monster?.Lair, multiline: true);
         _monsterFields["Description"] = Input("Внешность, повадки или заметные детали", multiline: true, text: monster?.Description);
         descriptions.Children.Add(descriptionGrid);
         descriptions.Children.Add(Field("Краткое описание", (TextBox)_monsterFields["Description"]));
@@ -535,6 +766,8 @@ public partial class MainWindow : Window
 
         var imagesSection = Section("Изображения", "Добавьте любое количество изображений и выберите главное для списка монстров.");
         var imagesBody = (StackPanel)imagesSection.Child!;
+        var imageThumbs = new WrapPanel { Orientation = Orientation.Horizontal };
+        imagesBody.Children.Add(imageThumbs);
         var imageStatus = new TextBlock
         {
             Text = monster?.ImagePaths.Count > 0 ? $"Загружено изображений: {monster.ImagePaths.Count}" : "Изображения не добавлены",
@@ -547,6 +780,34 @@ public partial class MainWindow : Window
             "Выберите изображение списка");
         selectedImage.SelectedIndex = monster?.SelectedImageIndex is int selected && selected >= 0 ? selected : -1;
         _monsterFields["SelectedImageIndex"] = selectedImage;
+        void RefreshImageThumbs()
+        {
+            imageThumbs.Children.Clear();
+            for (var imageIndex = 0; imageIndex < _pendingImages.Count; imageIndex++)
+            {
+                var capturedIndex = imageIndex;
+                var tile = new Grid { Width = 104, Height = 92, Margin = new Thickness(4) };
+                try
+                {
+                    if (File.Exists(_pendingImages[capturedIndex]))
+                        tile.Children.Add(new Image { Source = new Avalonia.Media.Imaging.Bitmap(_pendingImages[capturedIndex]), Width = 104, Height = 92, Stretch = Stretch.UniformToFill });
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { }
+                var remove = new Button { Content = "✕", Foreground = Brush.Parse("#FFFFFF"), Background = Brush.Parse("#D62828"), Padding = new Thickness(3), Width = 24, Height = 24, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top };
+                remove.Click += (_, _) =>
+                {
+                    _pendingImages.RemoveAt(capturedIndex);
+                    if (_pendingImages.Count == 0) selectedImage.SelectedIndex = -1;
+                    else if (selectedImage.SelectedIndex >= _pendingImages.Count) selectedImage.SelectedIndex = _pendingImages.Count - 1;
+                    selectedImage.ItemsSource = Enumerable.Range(1, _pendingImages.Count).Select(i => i.ToString(CultureInfo.InvariantCulture)).ToArray();
+                    imageStatus.Text = _pendingImages.Count > 0 ? $"Загружено изображений: {_pendingImages.Count}" : "Изображения не добавлены";
+                    RefreshImageThumbs();
+                };
+                tile.Children.Add(remove);
+                imageThumbs.Children.Add(tile);
+            }
+        }
+        RefreshImageThumbs();
         imagesBody.Children.Add(ActionButton("Загрузить изображения…", async () =>
         {
             try
@@ -569,11 +830,11 @@ public partial class MainWindow : Window
                     if (localPath is not null)
                         _pendingImages.Add(_store.ImportImage(localPath));
                 }
-                var knownCount = monster?.ImagePaths.Count ?? 0;
-                selectedImage.ItemsSource = Enumerable.Range(1, knownCount + _pendingImages.Count)
+                selectedImage.ItemsSource = Enumerable.Range(1, _pendingImages.Count)
                     .Select(index => index.ToString(CultureInfo.InvariantCulture)).ToArray();
-                selectedImage.SelectedIndex = knownCount + _pendingImages.Count - 1;
-                imageStatus.Text = $"Добавлено изображений: {knownCount + _pendingImages.Count}";
+                selectedImage.SelectedIndex = _pendingImages.Count - 1;
+                imageStatus.Text = $"Загружено изображений: {_pendingImages.Count}";
+                RefreshImageThumbs();
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or NotSupportedException)
             {
@@ -628,12 +889,19 @@ public partial class MainWindow : Window
         return combo;
     }
 
+
     private void AddMultiSelect(Grid grid, string label, IEnumerable<string> values, string key,
         int column, int row, List<string>? selected)
     {
         var options = values.ToArray();
-        var panel = new StackPanel { Spacing = 2, MaxHeight = 120 };
+
         var checkboxes = new List<CheckBox>();
+
+        var panel = new StackPanel
+        {
+            Spacing = 4
+        };
+
         foreach (var option in options)
         {
             var checkBox = new CheckBox
@@ -643,18 +911,36 @@ public partial class MainWindow : Window
                 Foreground = Brush.Parse(_isLightTheme ? "#3D4149" : "#C7CAD1"),
                 Padding = new Thickness(2)
             };
+
             if (key == "Skills")
                 checkBox.IsCheckedChanged += (_, _) => UpdateDerivedHints();
+
             checkboxes.Add(checkBox);
             panel.Children.Add(checkBox);
         }
-        var scroll = new ScrollViewer { Content = panel };
+
+        var scroll = new ScrollViewer
+        {
+            Content = panel,
+            Height = 220,
+            VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled
+        };
+
         var field = Field(label, scroll);
+
         Grid.SetColumn(field, column);
         Grid.SetRow(field, row);
+
         grid.Children.Add(field);
-        _monsterFields[key] = new TextBox { Tag = checkboxes, IsVisible = false };
+
+        _monsterFields[key] = new TextBox
+        {
+            Tag = checkboxes,
+            IsVisible = false
+        };
     }
+
 
     private void AddTextField(StackPanel panel, string label, string watermark, string key,
         bool required, int column, int row, string? value = null, bool multiline = false)
@@ -669,7 +955,7 @@ public partial class MainWindow : Window
         var rating = challenge.SelectedItem?.ToString() ?? "0";
         var recommendation = MonsterRules.RecommendationFor(rating);
         SetWatermark("ArmorClass", $"Рекомендуется {recommendation.ArmorClass}");
-        SetWatermark("AverageHitPoints", $"Рекомендуется {(recommendation.MinimumHitPoints + recommendation.MaximumHitPoints) / 2}");
+        SetWatermark("AverageHitPoints", $"Рекомендуется от {recommendation.MinimumHitPoints} до {recommendation.MaximumHitPoints}");
         if (_challengeHints is not null)
             _challengeHints.Text = $"Бонус мастерства {FormatModifier(recommendation.ProficiencyBonus)} · " +
                 $"Бонус атаки {FormatModifier(recommendation.AttackBonus)} · " +
@@ -832,10 +1118,9 @@ public partial class MainWindow : Window
             Reactions = GetText("Reactions"),
             LegendaryActions = GetText("LegendaryActions"),
             Lair = GetText("Lair"),
-            ImagePaths = original?.ImagePaths.ToList() ?? [],
+            ImagePaths = _pendingImages.ToList(),
             SelectedImageIndex = (GetControl("SelectedImageIndex") as ComboBox)?.SelectedIndex
         };
-        monster.ImagePaths.AddRange(_pendingImages);
         try
         {
             var existingIndex = _monsters.FindIndex(item => item.Id == monster.Id);
@@ -945,7 +1230,7 @@ public partial class MainWindow : Window
             {
                 Text = monster.Name,
                 FontWeight = FontWeight.SemiBold,
-                FontSize = 15,
+                FontSize = 20,
                 VerticalAlignment = VerticalAlignment.Center
             });
             summary.Children.Add(new TextBlock
@@ -956,12 +1241,7 @@ public partial class MainWindow : Window
             });
             var detailPanel = new StackPanel { Spacing = 10, Margin = new Thickness(0, 8, 0, 0) };
             var details = MonsterDetails(monster);
-            detailPanel.Children.Add(new TextBlock
-            {
-                Text = details,
-                TextWrapping = TextWrapping.Wrap,
-                LineHeight = 21
-            });
+            detailPanel.Children.Add(CreateFormattedTextBlock(details));
             if (monster.ImagePaths.Count > 0)
             {
                 var selected = monster.SelectedImageIndex is int imageIndex && imageIndex >= 0 && imageIndex < monster.ImagePaths.Count
@@ -992,30 +1272,124 @@ public partial class MainWindow : Window
 
     private static string MonsterDetails(Monster monster)
     {
-        var values = new List<string>
+        var values = new List<string>();
+
+        void Add(string value)
         {
+            if (!string.IsNullOrWhiteSpace(value))
+                values.Add(value);
+        }
+
+        void AddDetail(string title, string? value)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+                Add($"{title} {value}");
+        }
+
+        void AddGroup(params string[] items)
+        {
+            var validItems = items
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .ToList();
+
+            if (validItems.Count > 0)
+            {
+                if (values.Count > 0)
+                    values.Add("");
+
+                values.AddRange(validItems);
+            }
+        }
+
+        void AddSection(string title, string? content)
+        {
+            if (!string.IsNullOrWhiteSpace(content))
+            {
+                if (values.Count > 0)
+                    values.Add("");
+
+                values.Add($"— {title.ToUpperInvariant()} —");
+                values.Add(content);
+            }
+        }
+
+        // Основная информация
+        AddGroup(
             $"{monster.Size} {monster.Type}{(string.IsNullOrWhiteSpace(monster.Alignment) ? "" : $", {monster.Alignment}")}",
-            $"Класс доспеха {monster.ArmorClass}{(string.IsNullOrWhiteSpace(monster.ArmorType) ? "" : $" ({monster.ArmorType})")} · Хиты {monster.EffectiveHitPoints} ({monster.HitDiceCount}{monster.HitDie}{FormatModifier(monster.HitPointModifier ?? 0)})",
-            $"Бонус мастерства {FormatModifier(monster.ProficiencyBonus)} · Скорость {monster.Speed} · " +
-            $"Инициатива {FormatModifier(monster.InitiativeBonus ?? 0)} · Пассивное восприятие {monster.PassivePerception ?? 10}",
+            $"Класс доспеха {monster.ArmorClass}{(string.IsNullOrWhiteSpace(monster.ArmorType) ? "" : $" ({monster.ArmorType})")}",
+            $"Хиты {monster.EffectiveHitPoints} ({monster.HitDiceCount}{monster.HitDie}{FormatModifier(monster.HitPointModifier ?? 0)})",
+            $"Скорость {monster.Speed}"
+        );
+
+        // Характеристики
+        AddGroup(
             $"Характеристики: {string.Join(", ", monster.Abilities.Select(entry => $"{entry.Key} {entry.Value} ({FormatModifier(MonsterRules.AbilityModifier(entry.Value))})"))}"
-        };
-        AddDetail(values, "Спасброски", string.Join(", ", monster.SavingThrows));
-        AddDetail(values, "Навыки", string.Join(", ", monster.Skills));
-        AddDetail(values, "Уязвимости", monster.Vulnerabilities);
-        AddDetail(values, "Сопротивления", monster.Resistances);
-        AddDetail(values, "Иммунитеты к урону", monster.DamageImmunities);
-        AddDetail(values, "Иммунитеты к состояниям", monster.ConditionImmunities);
-        AddDetail(values, "Чувства", monster.Senses);
-        AddDetail(values, "Языки", monster.Languages);
-        AddDetail(values, "Среда обитания", monster.Habitat);
-        AddDetail(values, "Описание", monster.Description);
-        AddDetail(values, "Особенности", monster.Traits);
-        AddDetail(values, "Действия", monster.Actions);
-        AddDetail(values, "Бонусные действия", monster.BonusActions);
-        AddDetail(values, "Реакции", monster.Reactions);
-        AddDetail(values, "Легендарные действия", monster.LegendaryActions);
-        AddDetail(values, "Логово", monster.Lair);
+        );
+
+    // Спасброски
+    var savingThrows = monster.SavingThrows
+        .Select(name =>
+            $"{name} {FormatModifier(MonsterRules.GetSaveModifier(
+                name,
+                monster.Abilities,
+                monster.ProficiencyBonus))}");
+
+    var savingThrowsText = string.Join(", ", savingThrows);
+
+    // Навыки
+    var skills = monster.Skills
+        .Select(name =>
+            $"{name} {FormatModifier(MonsterRules.GetSkillModifier(
+                name,
+                monster.Abilities,
+                monster.ProficiencyBonus))}");
+
+    var skillsText = string.Join(", ", skills);
+
+    AddGroup(
+        string.IsNullOrWhiteSpace(savingThrowsText)
+            ? ""
+            : $"Спасброски {savingThrowsText}",
+        string.IsNullOrWhiteSpace(skillsText)
+            ? ""
+            : $"Навыки {skillsText}"
+    );
+
+        // Защита
+        AddGroup(
+            string.IsNullOrWhiteSpace(monster.Vulnerabilities) ? "" : $"Уязвимость к урону {monster.Vulnerabilities}",
+            string.IsNullOrWhiteSpace(monster.Resistances) ? "" : $"Сопротивление урону {monster.Resistances}",
+            string.IsNullOrWhiteSpace(monster.DamageImmunities) ? "" : $"Иммунитет к урону {monster.DamageImmunities}",
+            string.IsNullOrWhiteSpace(monster.ConditionImmunities) ? "" : $"Иммунитет к состоянию {monster.ConditionImmunities}"
+        );
+
+        // Чувства и языки
+        AddGroup(
+            string.IsNullOrWhiteSpace(monster.Senses) && monster.PassivePerception == null
+                ? ""
+                : $"Чувства{(string.IsNullOrWhiteSpace(monster.Senses) ? "" : $" {monster.Senses}")} · Пассивное восприятие {monster.PassivePerception ?? 10}",
+            string.IsNullOrWhiteSpace(monster.Languages) ? "" : $"Языки {monster.Languages}"
+        );
+
+        // Боевые показатели
+        AddGroup(
+            $"Бонус мастерства {FormatModifier(monster.ProficiencyBonus)}",
+            $"Инициатива {FormatModifier(monster.InitiativeBonus ?? 0)}"
+        );
+
+        // Среда обитания
+        AddGroup(
+            string.IsNullOrWhiteSpace(monster.Habitat) ? "" : $"Среда обитания {monster.Habitat}"
+        );
+
+        // Боевые разделы и описание
+        AddSection("Действия", monster.Actions);
+        AddSection("Бонусные действия", monster.BonusActions);
+        AddSection("Реакции", monster.Reactions);
+        AddSection("Легендарные действия", monster.LegendaryActions);
+        AddSection("Логово", monster.Lair);
+        AddSection("Описание", monster.Description);
+
         return string.Join(Environment.NewLine, values);
     }
 
@@ -1045,11 +1419,37 @@ public partial class MainWindow : Window
         };
         var heroesSection = Section("Герои", "Выберите сохранённого героя или создайте нового.");
         var heroesBody = (StackPanel)heroesSection.Child!;
-        var heroSelector = Select(_heroes.Select(hero => hero.Name), "Выберите героя");
+        var heroSelector = Select(
+            new[] { "Создать нового" }
+                .Concat(_heroes.Select(hero => hero.Name)),
+            "Выберите героя");
+
+        heroSelector.SelectedIndex = 0;
         var heroName = Input("Имя героя");
         var heroHp = Input("Хиты (необязательно)");
         var heroLevel = Input("Уровень (необязательно)");
         var heroInitiative = Input("Бонус инициативы (необязательно)");
+        heroSelector.SelectionChanged += (_, _) =>
+        {
+            var index = heroSelector.SelectedIndex;
+
+            if (index >= 1 && index - 1 < _heroes.Count)
+            {
+                var hero = _heroes[index - 1];
+
+                heroName.Text = hero.Name;
+                heroHp.Text = hero.HitPoints?.ToString() ?? "";
+                heroLevel.Text = hero.Level?.ToString() ?? "";
+                heroInitiative.Text = hero.InitiativeBonus.ToString();
+            }
+            else
+            {
+                heroName.Text = "";
+                heroHp.Text = "";
+                heroLevel.Text = "";
+                heroInitiative.Text = "";
+            }
+        };
         var unavailableHeroActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         foreach (var label in new[] { "Сортировать героев", "Фильтровать героев" })
         {
@@ -1067,21 +1467,155 @@ public partial class MainWindow : Window
         }
         heroesBody.Children.Add(heroFields);
         heroesBody.Children.Add(heroName);
+
         var heroList = new StackPanel { Spacing = 4 };
-        RefreshDraftList(heroList, _draftHeroes);
+
+        void RefreshHeroList()
+        {
+            heroList.Children.Clear();
+
+            foreach (var member in _draftHeroes.ToList())
+            {
+                var name = new TextBlock
+                {
+                    Text = member.Name,
+                    FontWeight = FontWeight.SemiBold,
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+                    TextWrapping = TextWrapping.Wrap
+                };
+
+                var info = new TextBlock
+                {
+                    Text = $"Уровень {(_heroes.FirstOrDefault(hero => hero.Id == member.HeroId)?.Level?.ToString() ?? "—")} · " +
+                        $"Хиты {member.HitPoints?.ToString() ?? "—"}",
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+                    TextWrapping = TextWrapping.Wrap
+                };
+
+                var description = new StackPanel
+                {
+                    Spacing = 3,
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+                };
+
+                description.Children.Add(name);
+                description.Children.Add(info);
+
+                var minusButton = ActionButton("−", () =>
+                {
+                    if (member.Count > 1)
+                    {
+                        member.Count--;
+                        RefreshHeroList();
+                        UpdateDifficulty();
+                    }
+                });
+
+                var amountText = new TextBlock
+                {
+                    Text = member.Count.ToString(),
+                    MinWidth = 24,
+                    TextAlignment = Avalonia.Media.TextAlignment.Center,
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+                    FontWeight = FontWeight.SemiBold
+                };
+
+                var plusButton = ActionButton("+", () =>
+                {
+                    if (member.Count < 100)
+                    {
+                        member.Count++;
+                        RefreshHeroList();
+                        UpdateDifficulty();
+                    }
+                });
+
+                var quantity = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 6,
+                    HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+                };
+
+                quantity.Children.Add(new TextBlock
+                {
+                    Text = "Количество",
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+                });
+
+                quantity.Children.Add(minusButton);
+                quantity.Children.Add(amountText);
+                quantity.Children.Add(plusButton);
+
+                var removeButton = ActionButton("Удалить", () =>
+                {
+                    _draftHeroes.Remove(member);
+                    RefreshHeroList();
+                    UpdateDifficulty();
+                });
+
+                var row = new Grid
+                {
+                    ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"),
+                    ColumnSpacing = 12,
+                    Margin = new Thickness(8, 4)
+                };
+
+                Grid.SetColumn(description, 0);
+                Grid.SetColumn(quantity, 1);
+                Grid.SetColumn(removeButton, 2);
+
+                row.Children.Add(description);
+                row.Children.Add(quantity);
+                row.Children.Add(removeButton);
+
+                var card = new Border
+                {
+                    Padding = new Thickness(8),
+                    Margin = new Thickness(0, 2),
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(6),
+                    Child = row
+                };
+
+                card.Classes.Add("dynamic-card");
+                heroList.Children.Add(card);
+            }
+        }
+
+        RefreshHeroList();
         heroesBody.Children.Add(heroList);
+
         heroesBody.Children.Add(ActionButton("Добавить героя", () =>
         {
-            Hero? hero = heroSelector.SelectedIndex is >= 0 and var selectedIndex && selectedIndex < _heroes.Count
-                ? _heroes[selectedIndex] : null;
-            var resolvedName = hero?.Name ?? heroName.Text?.Trim();
-            if (string.IsNullOrWhiteSpace(resolvedName))
+            var index = heroSelector.SelectedIndex;
+
+            if (index < 0)
             {
-                ShowStatus("Укажите имя героя или выберите его из списка.", isError: true);
+                ShowStatus("Выберите героя или пункт «Создать нового».", isError: true);
                 return;
             }
-            if (hero is null)
+
+            Hero hero;
+
+            if (index >= 1)
             {
+                if (index - 1 >= _heroes.Count)
+                    return;
+
+                hero = _heroes[index - 1];
+            }
+            else
+            {
+                var resolvedName = heroName.Text?.Trim();
+
+                if (string.IsNullOrWhiteSpace(resolvedName))
+                {
+                    ShowStatus("Укажите имя нового героя.", isError: true);
+                    return;
+                }
+
                 hero = new Hero
                 {
                     Name = resolvedName,
@@ -1089,16 +1623,27 @@ public partial class MainWindow : Window
                     Level = ParseInt(heroLevel.Text),
                     InitiativeBonus = ParseInt(heroInitiative.Text) ?? 0
                 };
+
                 _heroes.Add(hero);
+
+                heroSelector.ItemsSource = new[] { "Создать нового" }
+                    .Concat(_heroes.Select(item => item.Name))
+                    .ToArray();
+
+                heroSelector.SelectedIndex = 0;
             }
+
             _draftHeroes.Add(new EncounterMember
             {
                 HeroId = hero.Id,
                 Name = hero.Name,
                 HitPoints = hero.HitPoints,
-                InitiativeBonus = hero.InitiativeBonus
+                MaxHitPoints = hero.HitPoints,
+                InitiativeBonus = hero.InitiativeBonus,
+                Count = 1
             });
-            RefreshDraftList(heroList, _draftHeroes);
+
+            RefreshHeroList();
             UpdateDifficulty();
         }));
         page.Children.Add(heroesSection);
@@ -1113,7 +1658,49 @@ public partial class MainWindow : Window
         var monsterSelector = Select([], "Выберите монстра");
         var count = Input("Количество", text: "1");
         var imageSelector = Select([], "Основное изображение");
+        var imagePreview = new Avalonia.Controls.Image
+        {
+            Width = 180,
+            Height = 140,
+            Stretch = Avalonia.Media.Stretch.Uniform,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Left
+        };
         var monsterOptions = new List<Monster>();
+
+        void UpdateImagePreview()
+        {
+            if (monsterSelector.SelectedIndex < 0 ||
+                monsterSelector.SelectedIndex >= monsterOptions.Count)
+            {
+                imagePreview.Source = null;
+                return;
+            }
+
+            var selectedMonster = monsterOptions[monsterSelector.SelectedIndex];
+
+            var imagePath = imageSelector.SelectedIndex > 0
+                ? selectedMonster.ImagePaths.ElementAtOrDefault(
+                    imageSelector.SelectedIndex - 1) ?? ""
+                : selectedMonster.ImagePaths.ElementAtOrDefault(
+                    selectedMonster.SelectedImageIndex ?? 0) ?? "";
+
+            try
+            {
+                imagePreview.Source =
+                    !string.IsNullOrWhiteSpace(imagePath) &&
+                    File.Exists(imagePath)
+                        ? new Bitmap(imagePath)
+                        : null;
+            }
+            catch (Exception ex) when (
+                ex is IOException or
+                UnauthorizedAccessException or
+                ArgumentException)
+            {
+                imagePreview.Source = null;
+            }
+        }
+
         void ApplyEncounterMonsterFilters()
         {
             IEnumerable<Monster> filtered = _monsters;
@@ -1132,6 +1719,7 @@ public partial class MainWindow : Window
             monsterSelector.ItemsSource = monsterOptions.Select(monster => $"{monster.Name} · опасность {monster.ChallengeRating}").ToArray();
             monsterSelector.SelectedIndex = -1;
             imageSelector.ItemsSource = Array.Empty<string>();
+            imagePreview.Source = null;
         }
         var monsterFilterGrid = new Grid
         {
@@ -1159,7 +1747,12 @@ public partial class MainWindow : Window
                 imageSelector.ItemsSource = new[] { "Основное изображение" }.Concat(
                     Enumerable.Range(1, selectedMonster.ImagePaths.Count).Select(index => $"Изображение {index}")).ToArray();
                 imageSelector.SelectedIndex = 0;
+                UpdateImagePreview();
             }
+        };
+        imageSelector.SelectionChanged += (_, _) =>
+        {
+            UpdateImagePreview();
         };
         var monsterFields = new Grid { ColumnDefinitions = new ColumnDefinitions("3*,*"), ColumnSpacing = 10 };
         Grid.SetColumn(monsterSelector, 0);
@@ -1168,9 +1761,157 @@ public partial class MainWindow : Window
         monsterFields.Children.Add(count);
         monstersBody.Children.Add(monsterFields);
         monstersBody.Children.Add(Field("Изображение сцены", imageSelector));
+        monstersBody.Children.Add(imagePreview);
+
         var monsterList = new StackPanel { Spacing = 4 };
-        RefreshDraftList(monsterList, _draftMonsters);
+
+        void RefreshMonsterList()
+        {
+            monsterList.Children.Clear();
+
+            foreach (var member in _draftMonsters.ToList())
+            {
+                var monster = _monsters.FirstOrDefault(item => item.Id == member.MonsterId);
+
+                var name = new TextBlock
+                {
+                    Text = member.Name,
+                    FontWeight = FontWeight.SemiBold,
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+                    TextWrapping = TextWrapping.Wrap
+                };
+
+                var info = new TextBlock
+                {
+                    Text = $"Опасность {member.ChallengeRating} · Хиты {member.HitPoints?.ToString() ?? "—"}",
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+                    TextWrapping = TextWrapping.Wrap
+                };
+
+                var description = new StackPanel
+                {
+                    Spacing = 3,
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+                };
+                description.Children.Add(name);
+                description.Children.Add(info);
+
+                var minusButton = ActionButton("−", () =>
+                {
+                    if (member.Count > 1)
+                    {
+                        member.Count--;
+                        RefreshMonsterList();
+                        UpdateDifficulty();
+                    }
+                });
+
+                var amountText = new TextBlock
+                {
+                    Text = member.Count.ToString(),
+                    MinWidth = 24,
+                    TextAlignment = Avalonia.Media.TextAlignment.Center,
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+                    FontWeight = FontWeight.SemiBold
+                };
+
+                var plusButton = ActionButton("+", () =>
+                {
+                    if (member.Count < 100)
+                    {
+                        member.Count++;
+                        RefreshMonsterList();
+                        UpdateDifficulty();
+                    }
+                });
+
+                var quantity = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 6,
+                    HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+                };
+                quantity.Children.Add(new TextBlock
+                {
+                    Text = "Количество",
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+                });
+                quantity.Children.Add(minusButton);
+                quantity.Children.Add(amountText);
+                quantity.Children.Add(plusButton);
+
+                var removeButton = ActionButton("Удалить", () =>
+                {
+                    _draftMonsters.Remove(member);
+                    RefreshMonsterList();
+                    UpdateDifficulty();
+                });
+
+                var row = new Grid
+                {
+                    ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"),
+                    ColumnSpacing = 12,
+                    Margin = new Thickness(8, 4)
+                };
+
+                Grid.SetColumn(description, 0);
+                Grid.SetColumn(quantity, 1);
+                Grid.SetColumn(removeButton, 2);
+
+                row.Children.Add(description);
+                row.Children.Add(quantity);
+                row.Children.Add(removeButton);
+
+                var cardContent = new StackPanel
+                {
+                    Spacing = 8
+                };
+
+                // Показываем изображение, выбранное для этого участника энкаунтера.
+                if (!string.IsNullOrWhiteSpace(member.ImagePath) &&
+                    File.Exists(member.ImagePath))
+                {
+                    try
+                    {
+                        cardContent.Children.Add(new Avalonia.Controls.Image
+                        {
+                            Source = new Bitmap(member.ImagePath),
+                            Width = 140,
+                            Height = 110,
+                            Stretch = Avalonia.Media.Stretch.Uniform,
+                            HorizontalAlignment =
+                                Avalonia.Layout.HorizontalAlignment.Left
+                        });
+                    }
+                    catch (Exception ex) when (
+                        ex is IOException or
+                        UnauthorizedAccessException or
+                        ArgumentException)
+                    {
+                        // Если изображение недоступно, карточка всё равно отображается.
+                    }
+                }
+
+                cardContent.Children.Add(row);
+
+                var card = new Border
+                {
+                    Padding = new Thickness(8),
+                    Margin = new Thickness(0, 2),
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(6),
+                    Child = cardContent
+                };
+
+                card.Classes.Add("dynamic-card");
+                monsterList.Children.Add(card);
+            }
+        }
+
+        RefreshMonsterList();
         monstersBody.Children.Add(monsterList);
+
         monstersBody.Children.Add(ActionButton("Добавить монстра", () =>
         {
             if (monsterSelector.SelectedIndex < 0 || monsterSelector.SelectedIndex >= monsterOptions.Count)
@@ -1195,10 +1936,11 @@ public partial class MainWindow : Window
                 ChallengeRating = monster.ChallengeRating,
                 Count = amount.Value,
                 HitPoints = monster.EffectiveHitPoints,
+                MaxHitPoints = monster.EffectiveHitPoints,
                 InitiativeBonus = monster.InitiativeBonus ?? MonsterRules.AbilityModifier(monster.Abilities.GetValueOrDefault("Ловкость", 10)),
                 ImagePath = selectedImagePath
             });
-            RefreshDraftList(monsterList, _draftMonsters);
+            RefreshMonsterList();
             UpdateDifficulty();
         }));
         page.Children.Add(monstersSection);
@@ -1259,7 +2001,8 @@ public partial class MainWindow : Window
         InitiativeBonus = member.InitiativeBonus,
         Initiative = member.Initiative,
         ImagePath = member.ImagePath,
-        Concentrating = member.Concentrating
+        Concentrating = member.Concentrating,
+        MaxHitPoints = member.MaxHitPoints
     };
 
     private static void RefreshDraftList(StackPanel panel, List<EncounterMember> members)
@@ -1289,17 +2032,79 @@ public partial class MainWindow : Window
                 {
                     Text = $"{hero.Name} · хиты {hero.HitPoints?.ToString() ?? "—"} · уровень {_heroes.FirstOrDefault(item => item.Id == hero.HeroId)?.Level?.ToString() ?? "—"}"
                 });
-            content.Children.Add(new TextBlock { Text = "Монстры", FontWeight = FontWeight.Bold });
+
+            content.Children.Add(new TextBlock
+            {
+                Text = "Монстры",
+                FontWeight = FontWeight.Bold
+            });
+
             foreach (var member in encounter.Monsters)
             {
-                var monster = _monsters.FirstOrDefault(item => item.Id == member.MonsterId);
-                content.Children.Add(new TextBlock
+                var monster = _monsters.FirstOrDefault(
+                    item => item.Id == member.MonsterId);
+
+                var monsterName = member.Name;
+                var count = member.Count;
+                var challengeRating = member.ChallengeRating ?? "—";
+
+                var header = new StackPanel
                 {
-                    Text = $"{member.Name}{(member.Count > 1 ? $" × {member.Count}" : "")} · опасность {member.ChallengeRating} · хиты {member.HitPoints?.ToString() ?? "—"}" +
-                        (monster is null ? "" : $"{Environment.NewLine}{MonsterDetails(monster)}"),
-                    TextWrapping = TextWrapping.Wrap
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 12
+                };
+
+                header.Children.Add(new TextBlock
+                {
+                    Text = monsterName,
+                    FontWeight = FontWeight.SemiBold,
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
                 });
+
+                header.Children.Add(new TextBlock
+                {
+                    Text = $"Количество: {count}",
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+                });
+
+                header.Children.Add(new TextBlock
+                {
+                    Text = $"Опасность: {challengeRating}",
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+                });
+
+                var details = new StackPanel
+                {
+                    Spacing = 6,
+                    Margin = new Thickness(8)
+                };
+
+                if (monster is not null)
+                {
+                    details.Children.Add(CreateFormattedTextBlock(MonsterDetails(monster)));
+                }
+                else
+                {
+                    details.Children.Add(new TextBlock
+                    {
+                        Text = "Подробная информация о монстре недоступна."
+                    });
+                }
+
+                var monsterExpander = new Expander
+                {
+                    Header = header,
+                    Content = details,
+                    Padding = new Thickness(10),
+                    Margin = new Thickness(0, 2, 0, 2)
+                };
+
+                monsterExpander.Classes.Add("dynamic-card");
+                monsterExpander.BorderThickness = new Thickness(1);
+
+                content.Children.Add(monsterExpander);
             }
+
             var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
             buttons.Children.Add(ActionButton("Редактировать", () => ShowEncounterEditor(encounter)));
             buttons.Children.Add(ActionButton("Запустить бой", () => ShowCombat(encounter), primary: true));
@@ -1337,15 +2142,31 @@ public partial class MainWindow : Window
         {
             encounter.Heroes = encounter.Heroes.Select(CloneMember).ToList();
             encounter.Monsters = encounter.Monsters
-                .SelectMany(member => Enumerable.Range(0, Math.Max(1, member.Count)).Select(index =>
-                {
-                    var instance = CloneMember(member);
-                    instance.Id = Guid.NewGuid();
-                    instance.Count = 1;
-                    if (member.Count > 1)
-                        instance.Name = $"{member.Name} {index + 1}";
-                    return instance;
-                })).ToList();
+                .SelectMany(member => Enumerable.Range(0, Math.Max(1, member.Count))
+                    .Select(_ =>
+                    {
+                        var instance = CloneMember(member);
+                        instance.Id = Guid.NewGuid();
+                        instance.Count = 1;
+                        return instance;
+                    }))
+                .ToList();
+
+            // Нумеруем все экземпляры одним общим списком.
+            var monsterCounters = new Dictionary<string, int>(
+                StringComparer.CurrentCultureIgnoreCase);
+
+            foreach (var monster in encounter.Monsters)
+            {
+                // Имя должно быть исходным, без номера экземпляра.
+                var baseName = monster.Name;
+
+                monsterCounters.TryGetValue(baseName, out var number);
+                number++;
+                monsterCounters[baseName] = number;
+
+                monster.Name = $"{baseName} {number}";
+            }
             RollInitiative(encounter);
             encounter.CombatStarted = true;
             encounter.Round = 1;
@@ -1369,19 +2190,172 @@ public partial class MainWindow : Window
         if (encounter.CurrentTurn >= participants.Count)
             encounter.CurrentTurn = 0;
 
+
+        var combatButtons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8
+        };
+
+        combatButtons.Children.Add(ActionButton("Перебросить инициативу", () =>
+        {
+            RollInitiative(encounter);
+            encounter.CurrentTurn = 0;
+            SaveCombat(encounter);
+            ShowCombat(encounter);
+        }, primary: true));
+
+        combatButtons.Children.Add(ActionButton("Следующий ход", () =>
+        {
+            if (encounter.CurrentTurn + 1 >= Combatants(encounter).Count)
+            {
+                encounter.CurrentTurn = 0;
+                encounter.Round++;
+            }
+            else
+            {
+                encounter.CurrentTurn++;
+            }
+
+            SaveCombat(encounter);
+            ShowCombat(encounter);
+        }, primary: true));
+
+        page.Children.Add(combatButtons);
+
+        
+        // Контейнер, в котором будут располагаться участники боя.
+        var participantsPanel = new StackPanel
+        {
+            Spacing = 8
+        };
+
+        // Прокручивается список участников, а кнопки сверху остаются на месте.
+        var combatScrollViewer = new ScrollViewer
+        {
+            Content = participantsPanel,
+            MaxHeight = 550,
+            VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled
+        };
+
+        page.Children.Add(combatScrollViewer);
+
+        // Запоминаем карточку активного участника.
+        Avalonia.Controls.Control? currentParticipantCard = null;
+
+
+
         for (var index = 0; index < participants.Count; index++)
         {
             var member = participants[index];
             var isCurrent = index == encounter.CurrentTurn;
             var card = new StackPanel { Spacing = 10 };
-            card.Children.Add(new TextBlock
+
+            if (member.MonsterId is not null &&
+                !string.IsNullOrWhiteSpace(member.ImagePath) &&
+                File.Exists(member.ImagePath))
+            {
+                try
+                {
+                    var monsterImage = new Avalonia.Controls.Image
+                    {
+                        Source = new Avalonia.Media.Imaging.Bitmap(member.ImagePath),
+                        Height = 180,
+                        MaxWidth = 320,
+                        Stretch = Avalonia.Media.Stretch.Uniform,
+                        HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Left
+                    };
+
+                    card.Children.Add(monsterImage);
+                }
+                catch (Exception exception) when (
+                    exception is IOException or
+                    UnauthorizedAccessException or
+                    ArgumentException)
+                {
+                    // Если изображение недоступно, карточка всё равно отображается.
+                }
+            }
+
+            var header = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 12,
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+            };
+
+            header.Children.Add(new TextBlock
             {
                 Text = $"{(isCurrent ? "▶ " : "")}{member.Name} · инициатива {member.Initiative}",
                 FontWeight = FontWeight.Bold,
-                FontSize = 16
+                FontSize = 16,
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
             });
+
+            if (isCurrent)
+            {
+                header.Children.Add(ActionButton("Следующий ход", () =>
+                {
+                    var count = Combatants(encounter).Count;
+
+                    if (count == 0)
+                        return;
+
+                    if (encounter.CurrentTurn + 1 >= count)
+                    {
+                        encounter.CurrentTurn = 0;
+                        encounter.Round++;
+                    }
+                    else
+                    {
+                        encounter.CurrentTurn++;
+                    }
+
+                    SaveCombat(encounter);
+                    ShowCombat(encounter);
+                }, primary: true));
+            }
+
+            card.Children.Add(header);
+            if (member.MonsterId is Guid detailMonsterId)
+            {
+                var sourceMonster = _monsters.FirstOrDefault(m => m.Id == detailMonsterId);
+                if (sourceMonster is not null)
+                {
+                    var infoPanel = new StackPanel { Spacing = 8, IsVisible = false, Margin = new Thickness(8, 4, 8, 4) };
+                    infoPanel.Children.Add(CreateFormattedTextBlock(MonsterDetails(sourceMonster)));
+                    if (sourceMonster.ImagePaths.Count > 0)
+                    {
+                        var sourceIndex = sourceMonster.SelectedImageIndex is int si && si >= 0 && si < sourceMonster.ImagePaths.Count ? si : 0;
+                        try { infoPanel.Children.Insert(0, new Image { Source = new Bitmap(sourceMonster.ImagePaths[sourceIndex]), MaxHeight = 180, MaxWidth = 300, Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Left }); }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { }
+                    }
+                    var infoButton = ActionButton("ⓘ Информация о монстре", () => infoPanel.IsVisible = !infoPanel.IsVisible);
+                    card.Children.Add(infoButton);
+                    card.Children.Add(infoPanel);
+                }
+            }
             var health = member.HitPoints ?? 0;
-            card.Children.Add(new TextBlock { Text = $"Хиты: {health}", FontSize = 13 });
+
+            var maxHealth = member.MaxHitPoints
+                ?? (member.MonsterId is Guid monsterId
+                    ? _monsters.FirstOrDefault(m => m.Id == monsterId)?.EffectiveHitPoints
+                    : member.HeroId is Guid heroId
+                        ? _heroes.FirstOrDefault(h => h.Id == heroId)?.HitPoints
+                        : null)
+                ?? health;
+
+            maxHealth = Math.Max(0, maxHealth);
+            health = Math.Clamp(health, 0, maxHealth);
+            member.HitPoints = health;
+            member.MaxHitPoints = maxHealth;
+
+            card.Children.Add(new TextBlock
+            {
+                Text = $"Хиты: {health} / {maxHealth}",
+                FontSize = 13
+            });
             var controls = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
             var initiativeInput = Input("Инициатива", text: member.Initiative.ToString(CultureInfo.InvariantCulture));
             controls.Children.Add(initiativeInput);
@@ -1406,7 +2380,7 @@ public partial class MainWindow : Window
                     ShowStatus("Введите неотрицательное целое число хитов.", isError: true);
                     return;
                 }
-                member.HitPoints = health + value;
+                member.HitPoints = (int)Math.Min(maxHealth, (long)health + value);
                 SaveCombat(encounter);
                 ShowCombat(encounter);
             }));
@@ -1417,7 +2391,7 @@ public partial class MainWindow : Window
                     ShowStatus("Введите неотрицательное целое число хитов.", isError: true);
                     return;
                 }
-                member.HitPoints = Math.Max(0, health - value);
+                member.HitPoints = (int)Math.Max(0L, (long)health - value);
                 SaveCombat(encounter);
                 ShowCombat(encounter);
             }));
@@ -1436,28 +2410,19 @@ public partial class MainWindow : Window
                 ShowCombat(encounter);
             }));
             card.Children.Add(controls);
-            page.Children.Add(CardWithContent(card));
+            
+            var participantCard = CardWithContent(card);
+
+            // Запоминаем карточку участника, чей сейчас ход.
+            if (isCurrent)
+            {
+                currentParticipantCard = participantCard;
+            }
+
+            participantsPanel.Children.Add(participantCard);
+
         }
 
-        page.Children.Add(ActionButton("Следующий ход", () =>
-        {
-            if (encounter.CurrentTurn + 1 >= Combatants(encounter).Count)
-            {
-                encounter.CurrentTurn = 0;
-                encounter.Round++;
-            }
-            else
-                encounter.CurrentTurn++;
-            SaveCombat(encounter);
-            ShowCombat(encounter);
-        }, primary: true));
-        page.Children.Add(ActionButton("Перебросить инициативу", () =>
-        {
-            RollInitiative(encounter);
-            encounter.CurrentTurn = 0;
-            SaveCombat(encounter);
-            ShowCombat(encounter);
-        }));
         var newHeroName = Input("Добавить героя по имени");
         page.Children.Add(newHeroName);
         page.Children.Add(ActionButton("Добавить героя", () =>
@@ -1491,6 +2456,7 @@ public partial class MainWindow : Window
                 Name = monster.Name,
                 ChallengeRating = monster.ChallengeRating,
                 HitPoints = monster.EffectiveHitPoints,
+                MaxHitPoints = monster.EffectiveHitPoints,
                 InitiativeBonus = monster.InitiativeBonus ?? MonsterRules.AbilityModifier(monster.Abilities.GetValueOrDefault("Ловкость", 10)),
                 ImagePath = monster.ImagePaths.ElementAtOrDefault(monster.SelectedImageIndex ?? 0) ?? ""
             };
@@ -1503,9 +2469,23 @@ public partial class MainWindow : Window
         page.Children.Add(ActionButton("К списку энкаунтеров", ShowEncounterCollection));
         _status = new TextBlock { IsVisible = false, TextWrapping = TextWrapping.Wrap, FontSize = 13 };
         page.Children.Add(_status);
+
         SetPage(page);
+
+        // После отображения страницы прокручиваем список к активному участнику.
+        if (currentParticipantCard != null)
+        {
+            var activeCard = currentParticipantCard;
+
+            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                activeCard.BringIntoView();
+            }, Avalonia.Threading.DispatcherPriority.Background);
+        }
+
         if (startChanged)
             SaveCombat(encounter);
+
     }
 
     private static Border CardWithContent(Control content)
