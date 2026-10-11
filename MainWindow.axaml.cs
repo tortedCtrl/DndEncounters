@@ -16,6 +16,7 @@ public partial class MainWindow : Window
     private List<Monster> _monsters = [];
     private List<Hero> _heroes = [];
     private List<Encounter> _encounters = [];
+    private HashSet<Guid> _encounterEditorHeroIds = [];
     private readonly Dictionary<string, Control> _monsterFields = [];
     private Monster? _editingMonster;
     private Encounter? _editingEncounter;
@@ -1256,6 +1257,100 @@ public partial class MainWindow : Window
                 detailPanel.Children.Add(image);
             }
             detailPanel.Children.Add(ActionButton("Редактировать", () => ShowMonsterEditor(monster)));
+
+            detailPanel.Children.Add(ActionButton("🗑 Удалить монстра", async () =>
+            {
+                var dialog = new Window
+                {
+                    Title = "Удаление монстра",
+                    Width = 420,
+                    Height = 180,
+                    WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                    CanResize = false
+                };
+
+                var content = new StackPanel
+                {
+                    Margin = new Thickness(20),
+                    Spacing = 16
+                };
+
+                content.Children.Add(new TextBlock
+                {
+                    Text = $"Удалить монстра «{monster.Name}»?",
+                    TextWrapping = TextWrapping.Wrap,
+                    FontSize = 16
+                });
+
+                var buttons = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    Spacing = 10
+                };
+
+                var cancelButton = new Button
+                {
+                    Content = "Отмена",
+                    MinWidth = 90
+                };
+
+                var deleteButton = new Button
+                {
+                    Content = "🗑 Удалить",
+                    Foreground = Brushes.White,
+                    Background = Brushes.Firebrick
+                };
+
+                buttons.Children.Add(cancelButton);
+                buttons.Children.Add(deleteButton);
+                content.Children.Add(buttons);
+                dialog.Content = content;
+
+                cancelButton.Click += (_, _) => dialog.Close(false);
+                deleteButton.Click += (_, _) => dialog.Close(true);
+
+                var confirmed = await dialog.ShowDialog<bool>(this);
+
+                if (!confirmed)
+                    return;
+
+                // Запоминаем монстра на случай ошибки сохранения.
+                var index = _monsters.FindIndex(item => item.Id == monster.Id);
+
+                if (index < 0)
+                    return;
+
+                var removedMonster = _monsters[index];
+                _monsters.RemoveAt(index);
+
+                try
+                {
+                    _store.Save("monsters.json", _monsters);
+
+                    ShowMonsterCollection(
+                        search,
+                        typeFilter,
+                        sizeFilter,
+                        challengeFilter,
+                        alignmentFilter,
+                        sort);
+                }
+                catch (Exception exception) when (
+                    exception is IOException
+                    or UnauthorizedAccessException
+                    or System.Text.Json.JsonException)
+                {
+                    // Возвращаем монстра в коллекцию, если сохранить изменения не удалось.
+                    _monsters.Insert(index, removedMonster);
+
+                    ShowStatus(
+                        $"Не удалось удалить монстра: {exception.Message}",
+                        isError: true);
+                }
+            }));
+
+
             var expander = new Expander { Header = summary, Content = detailPanel, Margin = new Thickness(0, 0, 0, 8) };
             expander.Classes.Add("dynamic-card");
             expander.BorderThickness = new Thickness(1);
@@ -1584,8 +1679,83 @@ public partial class MainWindow : Window
             }
         }
 
+
         RefreshHeroList();
         heroesBody.Children.Add(heroList);
+
+        // Список героев, которых можно удалить из общей коллекции.
+        var savedHeroesList = new StackPanel { Spacing = 4 };
+
+        void RefreshSavedHeroesList()
+        {
+            savedHeroesList.Children.Clear();
+
+            foreach (var savedHero in _heroes.ToList())
+            {
+                // Удалять разрешаем только героям,
+                // созданным через редактор энкаунтера.
+                if (!_encounterEditorHeroIds.Contains(savedHero.Id))
+                    continue;
+
+                var heroNameText = new TextBlock
+                {
+                    Text = savedHero.Name,
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+                };
+
+                var deleteButton = ActionButton("Удалить из коллекции", () =>
+                {
+                    var heroId = savedHero.Id;
+
+                    // Удаляем героя из общего списка и списка созданных здесь.
+                    _heroes.RemoveAll(hero => hero.Id == heroId);
+                    _encounterEditorHeroIds.Remove(heroId);
+
+                    // Убираем этого героя из текущей встречи, если он уже добавлен.
+                    _draftHeroes.RemoveAll(member => member.HeroId == heroId);
+
+                    // Сохраняем изменения.
+                    _store.Save("heroes.json", _heroes);
+                    _store.Save(
+                        "encounter_editor_heroes.json",
+                        _encounterEditorHeroIds.ToList());
+
+                    // Обновляем выпадающий список.
+                    heroSelector.ItemsSource = new[] { "Создать нового" }
+                        .Concat(_heroes.Select(hero => hero.Name))
+                        .ToArray();
+                    heroSelector.SelectedIndex = 0;
+
+                    // Обновляем интерфейс.
+                    RefreshSavedHeroesList();
+                    RefreshHeroList();
+                    UpdateDifficulty();
+
+                    ShowStatus($"Герой «{savedHero.Name}» удалён из коллекции.");
+                });
+
+                var row = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 8
+                };
+
+                row.Children.Add(heroNameText);
+                row.Children.Add(deleteButton);
+                savedHeroesList.Children.Add(row);
+            }
+        }
+
+        heroesBody.Children.Add(new TextBlock
+        {
+            Text = "Герои, созданные в редакторе энкаунтера:",
+            FontWeight = FontWeight.SemiBold,
+            Margin = new Thickness(0, 8, 0, 4)
+        });
+
+        heroesBody.Children.Add(savedHeroesList);
+        RefreshSavedHeroesList();
+
 
         heroesBody.Children.Add(ActionButton("Добавить героя", () =>
         {
@@ -1626,9 +1796,17 @@ public partial class MainWindow : Window
 
                 _heroes.Add(hero);
 
+                _encounterEditorHeroIds.Add(hero.Id);
+                _store.Save("heroes.json", _heroes);
+                _store.Save(
+                    "encounter_editor_heroes.json",
+                    _encounterEditorHeroIds.ToList());
+
                 heroSelector.ItemsSource = new[] { "Создать нового" }
                     .Concat(_heroes.Select(item => item.Name))
                     .ToArray();
+
+                RefreshSavedHeroesList();
 
                 heroSelector.SelectedIndex = 0;
             }
