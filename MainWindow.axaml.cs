@@ -937,13 +937,14 @@ public partial class MainWindow : Window
         var combatGrid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*,*"), ColumnSpacing = 12 };
         AddTextField(combatGrid, "Скорость", "Например, 9 м, полёт 18 м", "Speed", false, 0, 0, monster?.Speed);
         AddMultiSelect(combatGrid, "Спасброски", MonsterRules.AbilityNames, "SavingThrows", 1, 0, monster?.SavingThrows);
-        AddMultiSelect(combatGrid, "Навыки", ["Акробатика", "Анализ", "Атлетика", "Внимательность", "Выживание",
-            "Выступление", "Запугивание", "История", "Ловкость рук", "Магия", "Медицина", "Обман",
-            "Природа", "Проницательность", "Религия", "Скрытность", "Убеждение", "Уход за животными"],
+        AddMultiSelect(combatGrid, "Навыки", ["Атлетика", "Акробатика", "Ловкость рук", "Скрытность", 
+            "Анализ",  "История", "Магия", "Природа", "Религия", 
+            "Восприятие", "Выживание", "Медицина", "Проницательность", "Уход за животными",
+            "Выступление", "Запугивание", "Обман", "Убеждение"],
             "Skills", 2, 0, monster?.Skills);
         combatFields.Children.Add(combatGrid);
         var combatOptions = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*"), ColumnSpacing = 12, Margin = new Thickness(0, 12, 0, 0) };
-        AddTextField(combatOptions, "Пассивное восприятие", "Рекомендуется 10 + модификатор Мудрости + владение Внимательностью", "PassivePerception", false, 0, 0, monster?.PassivePerception?.ToString());
+        AddTextField(combatOptions, "Пассивное восприятие", "Рекомендуется 10 + модификатор Мудрости + владение навыком Восприятие", "PassivePerception", false, 0, 0, monster?.PassivePerception?.ToString());
         AddTextField(combatOptions, "Бонус к инициативе", "По умолчанию равен модификатору Ловкости", "InitiativeBonus", false, 1, 0, monster?.InitiativeBonus?.ToString());
         combatFields.Children.Add(combatOptions);
         UpdateDerivedHints();
@@ -1192,7 +1193,7 @@ public partial class MainWindow : Window
         {
             var wisdom = ParseInt(wisdomInput.Text) ?? 10;
             var rating = GetSelection("ChallengeRating") ?? "0";
-            var proficient = GetSelectedOptions("Skills").Contains("Внимательность");
+            var proficient = GetSelectedOptions("Skills").Contains("Восприятие");
             var passive = MonsterRules.RecommendedPassivePerception(
                 wisdom, proficient, MonsterRules.RecommendationFor(rating).ProficiencyBonus);
             SetWatermark("PassivePerception", $"Рекомендуется {passive}");
@@ -1320,7 +1321,7 @@ public partial class MainWindow : Window
             Skills = skills,
             InitiativeBonus = ParseInt(GetText("InitiativeBonus")) ?? MonsterRules.AbilityModifier(dexterityScore),
             PassivePerception = ParseInt(GetText("PassivePerception")) ??
-                MonsterRules.RecommendedPassivePerception(wisdomScore, skills.Contains("Внимательность"), recommendation.ProficiencyBonus),
+                MonsterRules.RecommendedPassivePerception(wisdomScore, skills.Contains("Восприятие"), recommendation.ProficiencyBonus),
             Vulnerabilities = string.Join(", ", GetSelectedOptions("Vulnerabilities")),
             Resistances = string.Join(", ", GetSelectedOptions("Resistances")),
             DamageImmunities = string.Join(", ", GetSelectedOptions("DamageImmunities")),
