@@ -1,9 +1,13 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
 using Avalonia.Layout;
+using Avalonia.Input;
+using Avalonia.Animation;
+using Avalonia.Animation.Easings;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
@@ -25,9 +29,8 @@ public partial class MainWindow : Window
     private List<string> _pendingImages = [];
     private int _openMenu = -1;
     private bool _isLightTheme = true;
-    private static string ThemeSettingsPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "DndEncounters", "theme.txt");
+    private bool _reverseEncounterSort = false;
+    private bool _reverseMonsterSort = false;
     private string? _startupError;
     private TextBlock? _status;
     private TextBlock? _challengeHints;
@@ -46,14 +49,15 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         WindowState = WindowState.Maximized;
-        _isLightTheme = !LoadSavedLightTheme();
-        ToggleTheme();
-        ThemeButton.Click += (_, _) => ToggleTheme();
+        _isLightTheme = _store.Theme.Equals("light", StringComparison.OrdinalIgnoreCase);
+        ApplyTheme();
+        ThemeButton.Click += (_, _) => { _isLightTheme = !_isLightTheme; ApplyTheme(); _store.Configure(theme: _isLightTheme ? "light" : "dark"); };
         try
         {
             _monsters = _store.Load<Monster>("monsters.json");
             _heroes = _store.Load<Hero>("heroes.json");
             _encounters = _store.Load<Encounter>("encounters.json");
+            _encounterEditorHeroIds = _store.Load<Guid>("encounter_editor_heroes.json").ToHashSet();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
         {
@@ -67,6 +71,10 @@ public partial class MainWindow : Window
     private void BuildNavigation()
     {
         NavigationPanel.Children.Clear();
+        var settingsButton = new Button { Content = "⚙", Classes = { "quiet" }, Width = 54, MinWidth = 40, Height = 44 };
+        ToolTip.SetTip(settingsButton, "Настройки");
+        settingsButton.Click += async (_, _) => await ShowSettingsAsync();
+        NavigationPanel.Children.Add(settingsButton);
         var homeButton = new Button { Content = "Главная", Classes = { "nav" } };
         homeButton.Click += (_, _) =>
         {
@@ -85,22 +93,45 @@ public partial class MainWindow : Window
             };
             button.Click += (_, _) =>
             {
+                var previousMenu = _openMenu;
                 _openMenu = _openMenu == menuIndex ? -1 : menuIndex;
                 if (_openMenu >= 0)
                     _lastMenuIndex = menuIndex;
-                BuildMenu();
+                // При повторном нажатии на тот же раздел закрываем/оставляем меню
+                // без повторного запуска анимации. Плавный переход нужен при смене раздела.
+                BuildMenu(animate: _openMenu >= 0 && previousMenu != menuIndex);
             };
             NavigationPanel.Children.Add(button);
         }
         BuildMenu();
     }
 
-    private void BuildMenu()
+    private void BuildMenu(bool animate = false)
     {
         MenuPanel.Children.Clear();
         MenuPanel.IsVisible = _openMenu >= 0;
         if (_openMenu < 0)
             return;
+        if (animate)
+        {
+            MenuPanel.Opacity = 0;
+            MenuPanel.Transitions = new Transitions
+            {
+                new DoubleTransition
+                {
+                    Property = OpacityProperty,
+                    Duration = TimeSpan.FromMilliseconds(220),
+                    Easing = new CubicEaseOut()
+                }
+            };
+            Avalonia.Threading.Dispatcher.UIThread.Post(() => MenuPanel.Opacity = 1,
+                Avalonia.Threading.DispatcherPriority.Render);
+        }
+        else
+        {
+            MenuPanel.Transitions = null;
+            MenuPanel.Opacity = 1;
+        }
 
         foreach (var item in MenuItems[_openMenu])
         {
@@ -145,6 +176,12 @@ public partial class MainWindow : Window
     private void ToggleTheme()
     {
         _isLightTheme = !_isLightTheme;
+        ApplyTheme();
+        _store.Configure(theme: _isLightTheme ? "light" : "dark");
+    }
+
+    private void ApplyTheme()
+    {
         var palette = _isLightTheme
             ? new Dictionary<string, string>
             {
@@ -166,33 +203,35 @@ public partial class MainWindow : Window
         Background = Brush.Parse(palette["WindowBrush"]);
         if (Application.Current is { } application)
             application.RequestedThemeVariant = _isLightTheme ? ThemeVariant.Light : ThemeVariant.Dark;
-        ThemeButton.Content = _isLightTheme ? "Тёмная тема" : "Светлая тема";
-        SaveThemePreference(_isLightTheme);
+        ThemeButton.Content = _isLightTheme ? "☾" : "☀";
+        ToolTip.SetTip(ThemeButton, _isLightTheme ? "Переключить на тёмную тему" : "Переключить на светлую тему");
     }
 
-    private static bool LoadSavedLightTheme()
+    private async Task ShowSettingsAsync()
     {
-        try
+        var page = NewPage();
+        page.Children.Add(Heading("Настройки", "Настройка папки хранения данных приложения."));
+        var pathText = new TextBlock { Text = _store.DataDirectory, TextWrapping = TextWrapping.Wrap };
+        page.Children.Add(new TextBlock { Text = "Папка сохранения всех данных", FontWeight = FontWeight.SemiBold });
+        page.Children.Add(pathText);
+        page.Children.Add(ActionButton("📁 Выбрать папку…", async () =>
         {
-            if (File.Exists(ThemeSettingsPath))
-                return File.ReadAllText(ThemeSettingsPath).Trim().Equals("light", StringComparison.OrdinalIgnoreCase);
-        }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
-        return true;
-    }
+            var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = "Папка данных D&D Encounters", AllowMultiple = false });
+            var path = folders.FirstOrDefault()?.TryGetLocalPath();
+            if (path is null) return;
+            try
+            {
+                Directory.CreateDirectory(path);
+                _store.Configure(dataDirectory: path);
+                pathText.Text = _store.DataDirectory;
+                ShowStatus("Папка данных изменена. Новые данные будут сохраняться в выбранное место.");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            { ShowStatus($"Не удалось выбрать папку: {ex.Message}", isError: true); }
+        }));
 
-    private static void SaveThemePreference(bool isLight)
-    {
-        try
-        {
-            var directory = Path.GetDirectoryName(ThemeSettingsPath);
-            if (!string.IsNullOrEmpty(directory))
-                Directory.CreateDirectory(directory);
-            File.WriteAllText(ThemeSettingsPath, isLight ? "light" : "dark");
-        }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
+        page.Children.Add(Card("Важно", "При смене папки данные автоматически не перемещаются. Чтобы перенести библиотеку, скопируйте JSON-файлы из старой папки в новую."));
+        SetPage(page);
     }
 
     private void ShowHome()
@@ -360,7 +399,16 @@ public partial class MainWindow : Window
 
     private Button ActionButton(string text, Action action, bool primary = false)
     {
-        var button = new Button { Content = text, Classes = { primary ? "primary" : "quiet" } };
+        var content = text;
+        var danger = text.Contains("Удалить", StringComparison.OrdinalIgnoreCase) || text.Contains("Отменить", StringComparison.OrdinalIgnoreCase);
+        if (text.Contains("Удалить", StringComparison.OrdinalIgnoreCase)) content = "🗑";
+        else if (text.Contains("Редактировать", StringComparison.OrdinalIgnoreCase)) content = "✎";
+        else if (text.Contains("Запустить бой", StringComparison.OrdinalIgnoreCase)) content = "▶";
+        else if (text.Contains("Лечить", StringComparison.OrdinalIgnoreCase)) content = "♥";
+        else if (text.Contains("Нанести урон", StringComparison.OrdinalIgnoreCase)) content = "⚔";
+        else if (text.Contains("Концентрация", StringComparison.OrdinalIgnoreCase)) content = "✦";
+        var button = new Button { Content = content, Classes = { danger ? "danger" : primary ? "primary" : "quiet" } };
+        ToolTip.SetTip(button, text);
         button.Click += (_, _) => action();
         return button;
     }
@@ -424,7 +472,7 @@ public partial class MainWindow : Window
 
         toolbar.Children.Add(Tool("𝐁", () => WrapTextSelection(input, "**", "**")));
         toolbar.Children.Add(Tool("𝑰", () => WrapTextSelection(input, "*", "*")));
-        toolbar.Children.Add(Tool("U̲", () => WrapTextSelection(input, "++", "++")));
+        toolbar.Children.Add(Tool("U̲", () => WrapTextSelection(input, "__", "__")));
 
         var fontSize = Select(["12", "14", "16", "18", "20", "24", "28", "32"], "Т");
         fontSize.SelectedItem = "16";
@@ -437,6 +485,28 @@ public partial class MainWindow : Window
                 WrapTextSelection(input, $"{{size:{selectedSize}}}", "{/size}");
         }));
         toolbar.Children.Add(Tool("☷", () => PrefixSelectedLines(input, "- ")));
+
+        input.KeyDown += (_, e) =>
+        {
+            if (e.KeyModifiers != KeyModifiers.Control)
+                return;
+
+            switch (e.Key)
+            {
+                case Key.B:
+                    WrapTextSelection(input, "**", "**");
+                    e.Handled = true;
+                    break;
+                case Key.I:
+                    WrapTextSelection(input, "*", "*");
+                    e.Handled = true;
+                    break;
+                case Key.U:
+                    WrapTextSelection(input, "__", "__");
+                    e.Handled = true;
+                    break;
+            }
+        };
 
         editor.Children.Add(toolbar);
         editor.Children.Add(input);
@@ -498,62 +568,204 @@ public partial class MainWindow : Window
             LineHeight = 21
         };
 
-        // Поддерживаем обычный текст, **жирный**, *курсив*, ++подчёркнутый++
-        // и размер {size:18}текст{/size}. Старые записи без разметки тоже работают.
-        var pattern = new Regex(@"\*\*\*(.+?)\*\*\*|\*\*(.+?)\*\*|__(.+?)__|\*(.+?)\*|\+\+(.+?)\+\+|\{size:(\d{1,2})\}(.+?)\{/size\}");
         var lines = (text ?? "").Replace("\r\n", "\n").Split('\n');
 
-        for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
+        void AddRun(
+            string value,
+            FontWeight weight,
+            FontStyle style,
+            bool underline,
+            double? fontSize)
         {
-            if (lineIndex > 0)
+            if (value.Length == 0)
+                return;
+
+            var run = new Run { Text = value };
+
+            run.FontWeight = weight;
+            run.FontStyle = style;
+
+            if (underline)
+                run.TextDecorations = TextDecorations.Underline;
+
+            if (fontSize.HasValue)
+                run.FontSize = fontSize.Value;
+
+            block.Inlines.Add(run);
+        }
+
+        void Parse(
+            string value,
+            FontWeight weight,
+            FontStyle style,
+            bool underline,
+            double? fontSize)
+        {
+            int i = 0;
+            int plainStart = 0;
+
+            while (i < value.Length)
+            {
+                string? marker = null;
+
+                var nextWeight = weight;
+                var nextStyle = style;
+                var nextUnderline = underline;
+                var nextSize = fontSize;
+
+                // Размер шрифта: {size:24}текст{/size}
+                if (value.AsSpan(i).StartsWith("{size:"))
+                {
+                    var sizeMatch = Regex.Match(
+                        value[i..],
+                        @"^\{size:(\d{1,3})\}");
+
+                    if (sizeMatch.Success)
+                    {
+                        int contentStart = i + sizeMatch.Length;
+
+                        int close = value.IndexOf(
+                            "{/size}",
+                            contentStart,
+                            StringComparison.Ordinal);
+
+                        if (close >= 0)
+                        {
+                            AddRun(
+                                value[plainStart..i],
+                                weight,
+                                style,
+                                underline,
+                                fontSize);
+
+                            if (int.TryParse(
+                                sizeMatch.Groups[1].Value,
+                                out int parsedSize))
+                            {
+                                nextSize = Math.Clamp(parsedSize, 8, 48);
+                            }
+
+                            Parse(
+                                value[contentStart..close],
+                                weight,
+                                style,
+                                underline,
+                                nextSize);
+
+                            i = close + "{/size}".Length;
+                            plainStart = i;
+                            continue;
+                        }
+                    }
+                }
+
+                // Сначала проверяем самые длинные маркеры.
+                if (value.AsSpan(i).StartsWith("***"))
+                {
+                    marker = "***";
+                    nextWeight = FontWeight.Bold;
+                    nextStyle = FontStyle.Italic;
+                }
+                else if (value.AsSpan(i).StartsWith("~~"))
+                {
+                    marker = "~~";
+                    nextUnderline = true;
+                }
+                else if (value.AsSpan(i).StartsWith("__"))
+                {
+                    marker = "__";
+                    nextUnderline = true;
+                }
+                else if (value.AsSpan(i).StartsWith("**"))
+                {
+                    marker = "**";
+                    nextWeight = FontWeight.Bold;
+                }
+                else if (value[i] == '*')
+                {
+                    marker = "*";
+                    nextStyle = FontStyle.Italic;
+                }
+
+                if (marker == null)
+                {
+                    i++;
+                    continue;
+                }
+
+                int contentStartMarker = i + marker.Length;
+
+                int markerClose = value.IndexOf(
+                    marker,
+                    contentStartMarker,
+                    StringComparison.Ordinal);
+
+                if (markerClose < 0)
+                {
+                    i += marker.Length;
+                    continue;
+                }
+
+                AddRun(
+                    value[plainStart..i],
+                    weight,
+                    style,
+                    underline,
+                    fontSize);
+
+                Parse(
+                    value[contentStartMarker..markerClose],
+                    nextWeight,
+                    nextStyle,
+                    nextUnderline,
+                    nextSize);
+
+                i = markerClose + marker.Length;
+                plainStart = i;
+            }
+
+            AddRun(
+                value[plainStart..],
+                weight,
+                style,
+                underline,
+                fontSize);
+        }
+
+        foreach (var line in lines)
+        {
+            if (block.Inlines.Count > 0)
                 block.Inlines.Add(new LineBreak());
 
-            var line = lines[lineIndex];
-            // Автоматическое выделение подписей статблока и числовых модификаторов.
-            line = Regex.Replace(line,
+            // Автоматическое выделение характеристик статблока монстра.
+            var formattedLine = Regex.Replace(
+                line,
                 @"^(Класс доспеха|Хиты|Скорость|Спасброски|Навыки|Уязвимость к урону|Сопротивление урону|Иммунитет к урону|Иммунитет к состоянию|Чувства|Языки|Бонус мастерства|Инициатива|Среда обитания|Опасность|Характеристики|Сил|Лов|Тел|Инт|Мдр|Хар)(?=\s|:)",
                 "**$1**");
-            line = Regex.Replace(line, @"(?<![\w*])([+-]\d+)(?![\w*])", "**$1**");
-            var isListItem = line.StartsWith("- ", StringComparison.Ordinal) ||
-                             line.StartsWith("* ", StringComparison.Ordinal);
+
+            // Автоматическое выделение числовых модификаторов.
+            formattedLine = Regex.Replace(
+                formattedLine,
+                @"(?<![\w*])([+-]\d+)(?![\w*])",
+                "**$1**");
+
+            // Преобразование маркеров списка в символ •.
+            bool isListItem =
+                formattedLine.StartsWith("- ", StringComparison.Ordinal) ||
+                formattedLine.StartsWith("* ", StringComparison.Ordinal);
+
             if (isListItem)
             {
                 block.Inlines.Add(new Run { Text = "• " });
-                line = line[2..];
+                formattedLine = formattedLine[2..];
             }
 
-            var position = 0;
-            foreach (Match match in pattern.Matches(line))
-            {
-                if (match.Index > position)
-                    block.Inlines.Add(new Run { Text = line[position..match.Index] });
-
-                var contentGroup = Enumerable.Range(1, 7).FirstOrDefault(i => match.Groups[i].Success);
-                var run = new Run { Text = match.Groups[contentGroup].Value };
-                if (contentGroup == 1)
-                {
-                    run.FontWeight = FontWeight.Bold;
-                    run.FontStyle = FontStyle.Italic;
-                }
-                else if (contentGroup == 2)
-                    run.FontWeight = FontWeight.Bold;
-                else if (contentGroup == 3)
-                    run.FontWeight = FontWeight.Bold;
-                else if (contentGroup == 4)
-                    run.FontStyle = FontStyle.Italic;
-                else if (contentGroup == 5)
-                    run.TextDecorations = TextDecorations.Underline;
-                else if (contentGroup == 7 &&
-                         double.TryParse(match.Groups[6].Value, NumberStyles.Integer,
-                             CultureInfo.InvariantCulture, out var size))
-                    run.FontSize = Math.Clamp(size, 8, 48);
-
-                block.Inlines.Add(run);
-                position = match.Index + match.Length;
-            }
-
-            if (position < line.Length)
-                block.Inlines.Add(new Run { Text = line[position..] });
+            Parse(
+                formattedLine,
+                FontWeight.Normal,
+                FontStyle.Normal,
+                false,
+                null);
         }
 
         return block;
@@ -791,7 +1003,8 @@ public partial class MainWindow : Window
                 try
                 {
                     if (File.Exists(_pendingImages[capturedIndex]))
-                        tile.Children.Add(new Image { Source = new Avalonia.Media.Imaging.Bitmap(_pendingImages[capturedIndex]), Width = 104, Height = 92, Stretch = Stretch.UniformToFill });
+                        if (File.Exists(_pendingImages[capturedIndex])) tile.Children.Add(new Image { Source = new Avalonia.Media.Imaging.Bitmap(_pendingImages[capturedIndex]), Width = 104, Height = 92, Stretch = Stretch.UniformToFill });
+                        else tile.Children.Add(new TextBlock { Text = "Изображение утеряно", TextWrapping = TextWrapping.Wrap, Foreground = Brush.Parse("#D97777") });
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { }
                 var remove = new Button { Content = "✕", Foreground = Brush.Parse("#FFFFFF"), Background = Brush.Parse("#D62828"), Padding = new Thickness(3), Width = 24, Height = 24, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top };
@@ -1168,6 +1381,11 @@ public partial class MainWindow : Window
     {
         var page = NewPage();
         page.Children.Add(Heading("Коллекция монстров", "Сохранённые существа, статблоки и изображения."));
+        page.Children.Add(ActionButton(_reverseMonsterSort ? $"⇅ По имени: Я → А" : "⇅ По имени: А → Я", () =>
+        {
+            _reverseMonsterSort = !_reverseMonsterSort;
+            ShowMonsterCollection(search, typeFilter, sizeFilter, challengeFilter, alignmentFilter, sort);
+        }));
         var controls = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("2*,*,*,*,*,Auto"),
@@ -1219,8 +1437,12 @@ public partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(alignmentFilter))
             monsters = monsters.Where(monster => monster.Alignment == alignmentFilter);
         monsters = sort == "По опасности"
-            ? monsters.OrderBy(monster => Array.IndexOf(MonsterRules.ChallengeRatings, monster.ChallengeRating)).ThenBy(monster => monster.Name)
-            : monsters.OrderBy(monster => monster.Name, StringComparer.CurrentCultureIgnoreCase);
+            ? (_reverseMonsterSort
+                ? monsters.OrderByDescending(monster => Array.IndexOf(MonsterRules.ChallengeRatings, monster.ChallengeRating)).ThenByDescending(monster => monster.Name)
+                : monsters.OrderBy(monster => Array.IndexOf(MonsterRules.ChallengeRatings, monster.ChallengeRating)).ThenBy(monster => monster.Name))
+            : (_reverseMonsterSort
+                ? monsters.OrderByDescending(monster => monster.Name, StringComparer.CurrentCultureIgnoreCase)
+                : monsters.OrderBy(monster => monster.Name, StringComparer.CurrentCultureIgnoreCase));
 
         var shown = 0;
         foreach (var monster in monsters)
@@ -1249,12 +1471,13 @@ public partial class MainWindow : Window
                     ? imageIndex : 0;
                 var image = new Image
                 {
-                    Source = new Avalonia.Media.Imaging.Bitmap(monster.ImagePaths[selected]),
+                    Source = File.Exists(monster.ImagePaths[selected]) ? new Avalonia.Media.Imaging.Bitmap(monster.ImagePaths[selected]) : null,
                     Width = 260,
                     Height = 170,
-                    Stretch = Stretch.UniformToFill
+                    Stretch = Stretch.Uniform
                 };
-                detailPanel.Children.Add(image);
+                if (image.Source is not null) detailPanel.Children.Add(image);
+                else detailPanel.Children.Add(new TextBlock { Text = "Изображение утеряно", FontStyle = FontStyle.Italic, Foreground = Brush.Parse("#D97777") });
             }
             detailPanel.Children.Add(ActionButton("Редактировать", () => ShowMonsterEditor(monster)));
 
@@ -1410,7 +1633,7 @@ public partial class MainWindow : Window
 
         // Основная информация
         AddGroup(
-            $"{monster.Size} {monster.Type}{(string.IsNullOrWhiteSpace(monster.Alignment) ? "" : $", {monster.Alignment}")}",
+            $"*{monster.Size} {monster.Type}{(string.IsNullOrWhiteSpace(monster.Alignment) ? "" : $", {monster.Alignment}")}*",
             $"Класс доспеха {monster.ArmorClass}{(string.IsNullOrWhiteSpace(monster.ArmorType) ? "" : $" ({monster.ArmorType})")}",
             $"Хиты {monster.EffectiveHitPoints} ({monster.HitDiceCount}{monster.HitDie}{FormatModifier(monster.HitPointModifier ?? 0)})",
             $"Скорость {monster.Speed}"
@@ -1545,13 +1768,6 @@ public partial class MainWindow : Window
                 heroInitiative.Text = "";
             }
         };
-        var unavailableHeroActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        foreach (var label in new[] { "Сортировать героев", "Фильтровать героев" })
-        {
-            var placeholder = new Button { Content = label, IsEnabled = false, Opacity = 0.45 };
-            unavailableHeroActions.Children.Add(placeholder);
-        }
-        heroesBody.Children.Add(unavailableHeroActions);
         var heroFields = new Grid { ColumnDefinitions = new ColumnDefinitions("2*,*,*,*"), ColumnSpacing = 10 };
         Grid.SetColumn(heroSelector, 0);
         heroFields.Children.Add(heroSelector);
@@ -2199,9 +2415,12 @@ public partial class MainWindow : Window
     {
         var page = NewPage();
         page.Children.Add(Heading("Энкаунтеры", "Сохранённые сцены и запуск боя."));
+        page.Children.Add(ActionButton("⇅", () => { _reverseEncounterSort = !_reverseEncounterSort; ShowEncounterCollection(); }));
         if (_encounters.Count == 0)
             page.Children.Add(Card("Сохранённых энкаунтеров пока нет."));
-        foreach (var encounter in _encounters.OrderBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase))
+        foreach (var encounter in (_reverseEncounterSort
+            ? _encounters.OrderByDescending(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
+            : _encounters.OrderBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)))
         {
             var content = new StackPanel { Spacing = 8 };
             content.Children.Add(new TextBlock { Text = "Герои", FontWeight = FontWeight.Bold });
@@ -2375,7 +2594,7 @@ public partial class MainWindow : Window
             Spacing = 8
         };
 
-        combatButtons.Children.Add(ActionButton("Перебросить инициативу", () =>
+        combatButtons.Children.Add(ActionButton("🎲 Перебросить инициативу", () =>
         {
             RollInitiative(encounter);
             encounter.CurrentTurn = 0;
@@ -2429,6 +2648,11 @@ public partial class MainWindow : Window
             var member = participants[index];
             var isCurrent = index == encounter.CurrentTurn;
             var card = new StackPanel { Spacing = 10 };
+
+            if (member.MonsterId is not null && string.IsNullOrWhiteSpace(member.ImagePath))
+                card.Children.Add(new TextBlock { Text = "Изображение не добавлено", Foreground = Brush.Parse("#9299A6") });
+            else if (member.MonsterId is not null && !string.IsNullOrWhiteSpace(member.ImagePath) && !File.Exists(member.ImagePath))
+                card.Children.Add(new TextBlock { Text = "Изображение утеряно", Foreground = Brush.Parse("#D97777"), FontStyle = FontStyle.Italic });
 
             if (member.MonsterId is not null &&
                 !string.IsNullOrWhiteSpace(member.ImagePath) &&
@@ -2506,7 +2730,7 @@ public partial class MainWindow : Window
                     if (sourceMonster.ImagePaths.Count > 0)
                     {
                         var sourceIndex = sourceMonster.SelectedImageIndex is int si && si >= 0 && si < sourceMonster.ImagePaths.Count ? si : 0;
-                        try { infoPanel.Children.Insert(0, new Image { Source = new Bitmap(sourceMonster.ImagePaths[sourceIndex]), MaxHeight = 180, MaxWidth = 300, Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Left }); }
+                        try { if (File.Exists(sourceMonster.ImagePaths[sourceIndex])) infoPanel.Children.Insert(0, new Image { Source = new Bitmap(sourceMonster.ImagePaths[sourceIndex]), MaxHeight = 180, MaxWidth = 300, Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Left }); else infoPanel.Children.Insert(0, new TextBlock { Text = "Изображение утеряно", Foreground = Brush.Parse("#D97777") }); }
                         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { }
                     }
                     var infoButton = ActionButton("ⓘ Информация о монстре", () => infoPanel.IsVisible = !infoPanel.IsVisible);
@@ -2531,11 +2755,13 @@ public partial class MainWindow : Window
 
             card.Children.Add(new TextBlock
             {
-                Text = $"Хиты: {health} / {maxHealth}",
-                FontSize = 13
+                Text = $"♥  {health} / {maxHealth} хитов",
+                FontSize = 24,
+                FontWeight = FontWeight.Bold,
+                Margin = new Thickness(0, 4, 0, 4)
             });
             var controls = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-            var initiativeInput = Input("Инициатива", text: member.Initiative.ToString(CultureInfo.InvariantCulture));
+            var initiativeInput = Input("Инициатива");
             controls.Children.Add(initiativeInput);
             controls.Children.Add(ActionButton("Задать инициативу", () =>
             {
@@ -2551,6 +2777,10 @@ public partial class MainWindow : Window
             }));
             var amount = Input("Количество");
             controls.Children.Add(amount);
+            var damageTypes = new[] { "Тип урона", "Дробящий", "Колющий", "Рубящий", "Кислота", "Холод", "Огонь", "Силовое поле", "Электричество", "Некротическая энергия", "Яд", "Психический", "Излучение", "Звук" };
+            var damageType = Select(damageTypes, "Тип урона");
+            damageType.SelectedIndex = 0;
+            controls.Children.Add(damageType);
             controls.Children.Add(ActionButton("Лечить", () =>
             {
                 if (ParseInt(amount.Text) is not int value || value < 0)
@@ -2569,7 +2799,18 @@ public partial class MainWindow : Window
                     ShowStatus("Введите неотрицательное целое число хитов.", isError: true);
                     return;
                 }
-                member.HitPoints = (int)Math.Max(0L, (long)health - value);
+                var appliedDamage = value;
+                var selectedType = damageType.SelectedIndex > 0 ? damageTypes[damageType.SelectedIndex] : "";
+                var sourceMonster = member.MonsterId is Guid mid ? _monsters.FirstOrDefault(m => m.Id == mid) : null;
+                if (sourceMonster is not null && selectedType.Length > 0)
+                {
+                    bool HasType(string list) => list.Split(',', ';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                        .Any(item => item.Contains(selectedType, StringComparison.OrdinalIgnoreCase));
+                    if (HasType(sourceMonster.DamageImmunities)) appliedDamage = 0;
+                    else if (HasType(sourceMonster.Resistances)) appliedDamage = value / 2;
+                    else if (HasType(sourceMonster.Vulnerabilities)) appliedDamage = (int)Math.Min(int.MaxValue, (long)value * 2);
+                }
+                member.HitPoints = (int)Math.Max(0L, (long)health - appliedDamage);
                 SaveCombat(encounter);
                 ShowCombat(encounter);
             }));
@@ -2601,23 +2842,68 @@ public partial class MainWindow : Window
 
         }
 
-        var newHeroName = Input("Добавить героя по имени");
-        page.Children.Add(newHeroName);
-        page.Children.Add(ActionButton("Добавить героя", () =>
+        var addHeroSection = Section("Добавить героя", "Выберите героя из коллекции или введите данные нового участника.");
+        var addHeroBody = (StackPanel)addHeroSection.Child!;
+        var combatHeroSelector = Select(new[] { "Создать нового" }.Concat(_heroes.Select(hero => hero.Name)), "Выберите героя");
+        combatHeroSelector.SelectedIndex = 0;
+        var newHeroName = Input("Имя героя");
+        var newHeroHp = Input("Хиты");
+        var newHeroLevel = Input("Уровень");
+        var newHeroInitiative = Input("Бонус инициативы");
+        combatHeroSelector.SelectionChanged += (_, _) =>
         {
-            var name = newHeroName.Text?.Trim();
+            var selectedIndex = combatHeroSelector.SelectedIndex;
+            if (selectedIndex > 0 && selectedIndex - 1 < _heroes.Count)
+            {
+                var selectedHero = _heroes[selectedIndex - 1];
+                newHeroName.Text = selectedHero.Name;
+                newHeroInitiative.Text = selectedHero.InitiativeBonus.ToString();
+            }
+            else
+            {
+                newHeroName.Text = "";
+                newHeroHp.Text = "";
+                newHeroLevel.Text = "";
+                newHeroInitiative.Text = "";
+            }
+        };
+        addHeroBody.Children.Add(combatHeroSelector);
+        var combatHeroFields = new Grid { ColumnDefinitions = new ColumnDefinitions("2*,*,*,*"), ColumnSpacing = 10 };
+        var heroInputs = new Control[] { newHeroName, newHeroHp, newHeroLevel, newHeroInitiative };
+        for (var heroFieldIndex = 0; heroFieldIndex < heroInputs.Length; heroFieldIndex++)
+        {
+            Grid.SetColumn(heroInputs[heroFieldIndex], heroFieldIndex);
+            combatHeroFields.Children.Add(heroInputs[heroFieldIndex]);
+        }
+        addHeroBody.Children.Add(combatHeroFields);
+        addHeroBody.Children.Add(ActionButton("Добавить героя в бой", () =>
+        {
+            Hero? savedHero = combatHeroSelector.SelectedIndex > 0 && combatHeroSelector.SelectedIndex - 1 < _heroes.Count
+                ? _heroes[combatHeroSelector.SelectedIndex - 1] : null;
+            var name = (savedHero?.Name ?? newHeroName.Text)?.Trim();
             if (string.IsNullOrWhiteSpace(name))
             {
                 ShowStatus("Введите имя героя.", isError: true);
                 return;
             }
-            var member = new EncounterMember { Name = name, HeroId = null, HitPoints = 0 };
+            var hp = savedHero?.HitPoints ?? ParseInt(newHeroHp.Text) ?? 0;
+            var bonus = savedHero?.InitiativeBonus ?? ParseInt(newHeroInitiative.Text) ?? 0;
+            var member = new EncounterMember
+            {
+                Name = name,
+                HeroId = savedHero?.Id,
+                HitPoints = hp,
+                MaxHitPoints = hp,
+                InitiativeBonus = bonus,
+                Count = 1
+            };
             encounter.Heroes.Add(member);
             member.Initiative = Random.Shared.Next(1, 21) + member.InitiativeBonus;
             SortTurns(encounter);
             SaveCombat(encounter);
             ShowCombat(encounter);
-        }));
+        }, primary: true));
+        page.Children.Add(addHeroSection);
         var addMonster = Select(_monsters.Select(monster => monster.Name), "Добавить монстра");
         page.Children.Add(addMonster);
         page.Children.Add(ActionButton("Добавить монстра в бой", () =>

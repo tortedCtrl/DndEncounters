@@ -60,6 +60,11 @@
             <Setter Property="Foreground" Value="#17130D" />
             <Setter Property="BorderThickness" Value="0" />
         </Style>
+        <Style Selector="Button.danger">
+            <Setter Property="Background" Value="#C93636" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
         <Style Selector="Button.nav">
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
