@@ -567,7 +567,9 @@ public partial class MainWindow : Window
             TextWrapping = TextWrapping.Wrap,
             LineHeight = 21
         };
-
+        
+        block.Inlines ??= new InlineCollection();
+        
         var lines = (text ?? "").Replace("\r\n", "\n").Split('\n');
 
         void AddRun(
