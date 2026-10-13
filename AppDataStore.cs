@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace DndEncounters;
@@ -49,19 +49,76 @@ public sealed class AppDataStore
 
     public List<T> Load<T>(string fileName)
     {
-        var path = Path.Combine(DataDirectory, fileName);
-        if (!File.Exists(path)) return [];
-        var json = File.ReadAllText(path);
-        return JsonSerializer.Deserialize<List<T>>(json, _jsonOptions) ?? [];
+        var legacyPath = Path.Combine(DataDirectory, fileName);
+        var folder = Path.Combine(DataDirectory, FolderFor(fileName));
+        if (Directory.Exists(folder))
+        {
+            var result = new List<T>();
+            foreach (var path in Directory.EnumerateFiles(folder, "*.json").OrderBy(p => p, StringComparer.CurrentCultureIgnoreCase))
+            {
+                try
+                {
+                    var item = JsonSerializer.Deserialize<T>(File.ReadAllText(path), _jsonOptions);
+                    if (item is not null) result.Add(item);
+                }
+                catch (JsonException) { /* Skip malformed individual records, don't prevent startup. */ }
+            }
+            if (result.Count > 0 || !File.Exists(legacyPath)) return result;
+        }
+        if (!File.Exists(legacyPath)) return [];
+        // Import legacy collection files on first read; the next save migrates to individual files.
+        return JsonSerializer.Deserialize<List<T>>(File.ReadAllText(legacyPath), _jsonOptions) ?? [];
     }
 
     public void Save<T>(string fileName, List<T> items)
     {
         Directory.CreateDirectory(DataDirectory);
-        var path = Path.Combine(DataDirectory, fileName);
-        var temporaryPath = $"{path}.tmp";
-        File.WriteAllText(temporaryPath, JsonSerializer.Serialize(items, _jsonOptions));
-        File.Move(temporaryPath, path, overwrite: true);
+        var folder = Path.Combine(DataDirectory, FolderFor(fileName));
+        Directory.CreateDirectory(folder);
+        var desired = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in items)
+        {
+            var name = GetItemName(item) ?? "Без имени";
+            var safeName = SafeFileName(name);
+            var path = Path.Combine(folder, safeName + ".json");
+            if (!desired.Add(path))
+            {
+                var id = item?.GetType().GetProperty("Id")?.GetValue(item)?.ToString();
+                path = Path.Combine(folder, safeName + "_" + (string.IsNullOrWhiteSpace(id) ? Guid.NewGuid().ToString("N") : id) + ".json");
+                desired.Add(path);
+            }
+            var temporaryPath = path + ".tmp";
+            File.WriteAllText(temporaryPath, JsonSerializer.Serialize(item, _jsonOptions));
+            File.Move(temporaryPath, path, overwrite: true);
+        }
+        // Remove records deleted in the UI, but leave non-JSON files untouched.
+        foreach (var existing in Directory.EnumerateFiles(folder, "*.json"))
+            if (!desired.Contains(existing)) File.Delete(existing);
+    }
+
+    private static string FolderFor(string fileName) => Path.GetFileNameWithoutExtension(fileName) switch
+    {
+        "monsters" => "monsters",
+        "heroes" => "heroes",
+        "encounters" => "encounters",
+        "encounter_editor_heroes" => "encounter_editor_heroes",
+        var other => other
+    };
+
+    private static string? GetItemName<T>(T item)
+    {
+        if (item is Guid guid) return guid.ToString();
+        var property = item?.GetType().GetProperty("Name");
+        return property?.GetValue(item) as string
+            ?? item?.GetType().GetProperty("Id")?.GetValue(item)?.ToString();
+    }
+
+    private static string SafeFileName(string name)
+    {
+        var invalid = Path.GetInvalidFileNameChars().ToHashSet();
+        var safe = new string(name.Trim().Select(c => invalid.Contains(c) || c is '/' or '\\' ? '_' : c).ToArray());
+        safe = safe.Trim('.', ' ');
+        return string.IsNullOrWhiteSpace(safe) ? "Без имени" : safe;
     }
 
     // Store the original path, never copy image bytes. A missing source is handled by the UI.

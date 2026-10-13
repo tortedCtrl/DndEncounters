@@ -55,6 +55,8 @@ public sealed class Hero
     public int? HitPoints { get; set; }
     public int? Level { get; set; }
     public int InitiativeBonus { get; set; }
+    // Необязательный путь к единственному изображению героя.
+    public string ImagePath { get; set; } = "";
 }
 
 public sealed class EncounterMember
@@ -95,6 +97,36 @@ public sealed record ChallengeRecommendation(
     int MaximumDamagePerRound,
     int SaveDc,
     int Experience);
+
+public sealed record EncounterDifficultyResult(
+    int Level,
+    string Label,
+    int BaseXp,
+    int AdjustedXp,
+    double Multiplier,
+    int PartySize,
+    int MonsterCount,
+    int Easy,
+    int Medium,
+    int Hard,
+    int Deadly)
+{
+    // Заполнение шкалы от 0 до 1: четыре равных сегмента (легко, средне, сложно, смертельно).
+    // Внутри сегмента уровень растёт вместе со скорректированным опытом.
+    public double Fill
+    {
+        get
+        {
+            if (Level <= 0)
+                return Easy <= 0 ? 0 : 0.06 * Math.Clamp(AdjustedXp / (double)Easy, 0, 1);
+            var thresholds = new[] { Easy, Medium, Hard, Deadly };
+            var start = thresholds[Level - 1];
+            var end = Level < 4 ? thresholds[Level] : Deadly * 1.5;
+            var progress = end > start ? Math.Clamp((AdjustedXp - start) / (double)(end - start), 0, 1) : 1;
+            return (Level - 1 + 0.25 + 0.75 * progress) / 4d;
+        }
+    }
+}
 
 public static class MonsterRules
 {
@@ -165,41 +197,71 @@ public static class MonsterRules
     public static int RecommendedPassivePerception(int wisdom, bool proficient, int proficiencyBonus) =>
         10 + AbilityModifier(wisdom) + (proficient ? proficiencyBonus : 0);
 
-    public static string EncounterDifficulty(IEnumerable<EncounterMember> monsters, IEnumerable<int> partyLevels)
+    public static int ExperienceFor(string? rating) => RecommendationFor(rating ?? "0").Experience;
+
+    // Опыт за побеждённых монстров (DMG 2014, гл. 3): множители численности на него не влияют.
+    public static int MonsterExperience(IEnumerable<EncounterMember> monsters) =>
+        monsters.Sum(member => ExperienceFor(member.ChallengeRating) * Math.Max(1, member.Count));
+
+    public static int PartySize(IEnumerable<EncounterMember> heroes) =>
+        heroes.Sum(member => Math.Max(1, member.Count));
+
+    // Опыт делится поровну между героями, остаток отбрасывается.
+    public static int ExperiencePerHero(int totalExperience, int partySize) =>
+        partySize <= 0 ? 0 : totalExperience / partySize;
+
+    // Множитель зависит от общего числа монстров в бою, а для малых (<3) и больших (>=6) групп сдвигается на шаг.
+    public static double CountMultiplier(int monsterCount, int partySize)
+    {
+        double[] steps = [0.5, 1, 1.5, 2, 2.5, 3, 4, 5];
+        var index = monsterCount switch
+        {
+            <= 1 => 1,
+            2 => 2,
+            <= 6 => 3,
+            <= 10 => 4,
+            <= 14 => 5,
+            _ => 6
+        };
+        if (partySize < 3) index++;
+        else if (partySize >= 6) index--;
+        return steps[Math.Clamp(index, 0, steps.Length - 1)];
+    }
+
+    public static EncounterDifficultyResult? CalculateDifficulty(
+        IEnumerable<EncounterMember> monsters, IEnumerable<int> partyLevels)
     {
         var members = monsters.ToList();
         var levels = partyLevels.ToList();
         if (members.Count == 0 || levels.Count == 0)
-            return "Добавьте героев и монстров для расчёта.";
+            return null;
 
-        var adjustedXp = (int)members.GroupBy(member => member.MonsterId).Sum(group =>
-        {
-            var member = group.First();
-            var count = group.Sum(entry => Math.Max(1, entry.Count));
-            var multiplier = count switch
-            {
-                <= 1 => 1d,
-                2 => 1.5,
-                <= 6 => 2d,
-                <= 10 => 2.5,
-                <= 14 => 3d,
-                _ => 4d
-            };
-            if (levels.Count < 3)
-                multiplier = multiplier switch { 1 => 1.5, 1.5 => 2, 2 => 2.5, 2.5 => 3, _ => 4 };
-            else if (levels.Count > 5)
-                multiplier = multiplier switch { 4 => 3, 3 => 2.5, 2.5 => 2, 2 => 1.5, _ => 1 };
-            return RecommendationFor(member.ChallengeRating).Experience * count * multiplier;
-        });
+        var monsterCount = members.Sum(member => Math.Max(1, member.Count));
+        var baseXp = MonsterExperience(members);
+        var multiplier = CountMultiplier(monsterCount, levels.Count);
+        var adjustedXp = (int)Math.Round(baseXp * multiplier, MidpointRounding.AwayFromZero);
+
         var easy = levels.Sum(level => PartyThresholds[Math.Clamp(level, 1, 20)].Easy);
         var medium = levels.Sum(level => PartyThresholds[Math.Clamp(level, 1, 20)].Medium);
         var hard = levels.Sum(level => PartyThresholds[Math.Clamp(level, 1, 20)].Hard);
         var deadly = levels.Sum(level => PartyThresholds[Math.Clamp(level, 1, 20)].Deadly);
-        var difficulty = adjustedXp < easy ? "Лёгкая" :
-            adjustedXp < medium ? "Средняя" :
-            adjustedXp < hard ? "Тяжёлая" :
-            adjustedXp < deadly ? "Смертельно опасная" : "Выше смертельно опасной";
-        return $"{difficulty} · {adjustedXp:N0} скорректированного опыта";
+
+        // Пороги DMG - это нижние границы категории: опыт не ниже порога означает эту сложность.
+        var difficultyLevel = adjustedXp >= deadly ? 4
+            : adjustedXp >= hard ? 3
+            : adjustedXp >= medium ? 2
+            : adjustedXp >= easy ? 1
+            : 0;
+        var label = difficultyLevel switch
+        {
+            4 => "смертельная",
+            3 => "сложная",
+            2 => "средняя",
+            1 => "лёгкая",
+            _ => "тривиальная"
+        };
+        return new EncounterDifficultyResult(difficultyLevel, label, baseXp, adjustedXp, multiplier,
+            levels.Count, monsterCount, easy, medium, hard, deadly);
     }
 
     private static ChallengeRecommendation R(string cr, int proficiency, int ac, int minHp, int maxHp,
